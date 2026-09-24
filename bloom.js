@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import qrcode from 'qrcode-generator';
 
 // ------------------------------------------------------------------
@@ -32,6 +33,7 @@ const FLOWER_ICONS = {
   cat:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 6.5 3.5 2l3 2.5h3L12.5 2l.5 4.5a5 5 0 1 1-10 0Z"/><circle cx="6" cy="8" r=".6" fill="currentColor"/><circle cx="10" cy="8" r=".6" fill="currentColor"/></svg>',
   bear:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="4" cy="4.5" r="1.8"/><circle cx="12" cy="4.5" r="1.8"/><circle cx="8" cy="9" r="5"/><ellipse cx="8" cy="10.5" rx="1.8" ry="1.3"/></svg>',
   chick: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="9" r="5.2"/><path d="M8 3.8c-.6-1.4 0-2.3 1-2.3M7.2 10l.8 1.2.8-1.2Z"/><circle cx="6" cy="8" r=".6" fill="currentColor"/><circle cx="10" cy="8" r=".6" fill="currentColor"/></svg>',
+  kid:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="6" r="4"/><path d="M5.5 3.2c1-1.4 3.6-1.6 5.2 0M6.4 7.3c.8.7 2 .8 3.2-.2M3.5 15c.5-2.6 2.3-4 4.5-4s4 1.4 4.5 4"/></svg>',
   tulip: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 3.5 6 6l2-3 2 3 2-2.5V8a4 4 0 0 1-8 0V3.5ZM8 12v2.5"/></svg>',
 };
 
@@ -431,6 +433,19 @@ function build() {
 
   const n = qr.getModuleCount();
   state.n = n;
+  const isKid = isKidFig(state.flower);
+  kid.visible = isKid;
+  vase.visible = !isKid;
+  if (!isKid && camera.near !== 0.1) { camera.near = 0.1; camera.far = 200; camera.updateProjectionMatrix(); }
+  if (isKid) {
+    const want = KID_FIGURES[state.flower] || KID_DEFAULT;
+    if (want !== kidStyle) { kidStyle = want; rebuildKidBody(); }
+    items = []; leaves = []; tiles = [];
+    card.visible = false;
+    buildKid(qr);
+    frame(0, true);
+    return true;
+  }
   const R = rand(hash(state.url + state.flower));
   const off = ((n - 1) / 2) * CELL;
 
@@ -535,6 +550,7 @@ function build() {
 }
 
 function recolor() {
+  if (isKidFig(state.flower) && state.n) { build(); return; }
   const pal = PALETTES[state.palette];
   const base = new THREE.Color(pal.petal), center = new THREE.Color(pal.center), leaf = new THREE.Color(pal.leaf);
   const c = new THREE.Color();
@@ -565,16 +581,21 @@ const swayQ = new THREE.Quaternion(), swayE = new THREE.Euler();
 function frame(dt, force = false) {
   const moving = state.p !== state.target;
   if (moving) {
-    const step = dt / BLOOM_MS;
+    const step = dt / (isKidFig(state.flower) ? KID_MS : BLOOM_MS);
     state.p = state.target > state.p ? Math.min(1, state.p + step) : Math.max(0, state.p - step);
   }
   const idle = state.p === 0 && !reduceMotion;
-  if (idle) state.spin += dt * 0.00012;
+  if (idle && !isKidFig(state.flower)) state.spin += dt * 0.00012;
   if (!moving && !idle && !force && state.p === 1) return false;
 
   const p = state.p;
   spinQ.setFromAxisAngle(UP, state.spin);
   const time = reduceMotion ? 0 : performance.now() / 1000;
+  if (isKidFig(state.flower)) {
+    flyButterflies(time, 1);
+    kidFrame(p, time);
+    return true;
+  }
 
   items.forEach((it, i) => {
     const e = easeInOut(clamp01((p - it.delay) / (1 - 0.18)));
@@ -655,6 +676,301 @@ function placeCamera(e) {
 }
 
 // ------------------------------------------------------------------
+// Kid mode: an original cheeky kid. The QR is a tiny woven label on the
+// shirt pocket; tapping zooms the camera in until the thread weave is the code.
+// ------------------------------------------------------------------
+const KID = 'kid';
+const KID_FIGURES = { kid: null };            // figure id → style override (null = default look)
+const isKidFig = (id) => id in KID_FIGURES;
+const KID_MS = 1700;
+
+// Look of the kid. A local-only module (see boot) can swap this for a personal fan-art style.
+const KID_DEFAULT = {
+  yarn: null, ground: '#f4efe4', stripes: true,       // null yarn = palette's dark colour
+  shorts: '#2e3a57', hair: '#2b1d17', skin: '#f1c29f',
+  head: 'round', brows: 'thin', eyes: 'classic', tufts: true, cheeks: true,
+  fibreDark: null, fibreLight: '#f4efe4',
+};
+let kidStyle = KID_DEFAULT;
+
+const kid = new THREE.Group();
+kid.visible = false;
+scene.add(kid);
+
+const std = (color, roughness = 0.6) => new THREE.MeshStandardMaterial({ color, roughness });
+const kidMats = {
+  skin: std('#f1c29f', 0.55), skinShade: std('#e3a987', 0.6), hair: std('#2b1d17', 0.45),
+  shorts: std('#2e3a57', 0.8), sock: std('#f6f3ee', 0.9), shoe: std('#f3f1ec', 0.5), sole: std('#d94f3d', 0.6),
+  eyeWhite: std('#fbfaf7', 0.25), pupil: std('#1a1412', 0.2), mouth: std('#7a2a2a', 0.5), cheek: std('#f39b8f', 0.8),
+  shirt: new THREE.MeshStandardMaterial({ roughness: 0.85 }),
+};
+const sleeveMat = new THREE.MeshStandardMaterial({ roughness: 0.95, bumpScale: 1.5 });
+// the fibre layer is invisible until the last moment of the zoom
+const macroMat = new THREE.MeshStandardMaterial({ roughness: 0.9, transparent: true, opacity: 0, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+
+// The shirt is a plain striped knit. Only at the very end of the zoom do the fibres
+// that make up the fabric resolve into a woven 2D grid of QR codes.
+const STITCH = 0.0045;       // world size of one knit stitch
+const STRIPE_PERIOD = 0.09;  // world height of one stripe repeat
+const FIBRE_TILE = 0.02;     // world size of one woven QR tile: microscopic
+const FIBRE_TILES = 9;       // tiles across the revealed patch
+const CREAM = '#f4efe4';
+
+function stitchSprite(hex, s, k) {
+  const size = Math.max(2, Math.ceil(s));
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const x = c.getContext('2d');
+  const col = new THREE.Color(hex);
+  const css = (m) => `rgb(${Math.min(255, col.r * 255 * m * k) | 0},${Math.min(255, col.g * 255 * m * k) | 0},${Math.min(255, col.b * 255 * m * k) | 0})`;
+  x.fillStyle = css(0.55); x.fillRect(0, 0, size, size);
+  for (const side of [-1, 1]) {
+    x.save();
+    x.translate(size / 2 + side * size * 0.2, size * 0.5);
+    x.rotate(side * -0.5);
+    const g = x.createLinearGradient(-size * 0.2, 0, size * 0.2, 0);
+    g.addColorStop(0, css(0.75)); g.addColorStop(0.5, css(1.12)); g.addColorStop(1, css(0.7));
+    x.fillStyle = g;
+    x.beginPath(); x.ellipse(0, 0, size * 0.2, size * 0.52, 0, 0, Math.PI * 2); x.fill();
+    x.restore();
+  }
+  return c;
+}
+
+// One stripe repeat of knit, tiled across the shirt
+function knitTexture(yarnHex, groundHex = CREAM, stripes = true) {
+  const rows = Math.round(STRIPE_PERIOD / STITCH), band = Math.round(rows * 0.42), cols = 32, px = 12;
+  const c = document.createElement('canvas'); c.width = cols * px; c.height = rows * px;
+  const x = c.getContext('2d'), sprites = {};
+  const sprite = (hex, v) => (sprites[hex + v] ||= stitchSprite(hex, px, 0.9 + v * 0.07));
+  for (let r = 0; r < rows; r++) for (let q = 0; q < cols; q++) {
+    x.drawImage(sprite(stripes && r >= band ? groundHex : yarnHex, (hash(`${r},${q}`) >>> 3) % 4), q * px, r * px, px, px);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 16; t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+const knitFit = (tex, w, h) => { tex.repeat.set(w / (32 * STITCH), h / STRIPE_PERIOD); return tex; };
+
+// One seamless tile: the QR (with its quiet zone) as over-under woven fibres
+function fibreTile(qr, darkHex, lightHex = CREAM) {
+  const n = qr.getModuleCount(), T = n + QUIET * 2, size = 1024, m = size / T, s = m / 3;
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const x = c.getContext('2d');
+  const R = rand(hash(state.url + 'fibre'));
+  const dark = new THREE.Color(darkHex), light = new THREE.Color(lightHex);
+  const css = (col, k) => `rgb(${Math.min(255, col.r * 255 * k) | 0},${Math.min(255, col.g * 255 * k) | 0},${Math.min(255, col.b * 255 * k) | 0})`;
+  for (let r = -QUIET; r < n + QUIET; r++) for (let q = -QUIET; q < n + QUIET; q++) {
+    const inside = r >= 0 && q >= 0 && r < n && q < n;
+    const col = inside && qr.isDark(r, q) ? dark : light;
+    const ox = (q + QUIET) * m, oy = (r + QUIET) * m;
+    x.fillStyle = css(col, 0.72); x.fillRect(ox, oy, m, m);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      const px = ox + j * s, py = oy + i * s, k = 0.93 + R() * 0.14;
+      const horizontal = (i + j + r + q) % 2 === 0;
+      const g = horizontal ? x.createLinearGradient(0, py, 0, py + s) : x.createLinearGradient(px, 0, px + s, 0);
+      g.addColorStop(0, css(col, 0.8 * k)); g.addColorStop(0.45, css(col, 1.08 * k)); g.addColorStop(1, css(col, 0.74 * k));
+      x.fillStyle = g;
+      const inset = s * 0.12;
+      x.beginPath();
+      if (horizontal) x.roundRect(px - s * 0.05, py + inset, s * 1.1, s - inset * 2, s * 0.35);
+      else x.roundRect(px + inset, py - s * 0.05, s - inset * 2, s * 1.1, s * 0.35);
+      x.fill();
+    }
+  }
+  x.lineWidth = 1;
+  for (let i = 0; i < 500; i++) { // stray fibres
+    const px = R() * size, py = R() * size, a = R() * Math.PI, l = 3 + R() * 8;
+    x.strokeStyle = `rgba(255,255,255,${0.06 + R() * 0.08})`;
+    x.beginPath(); x.moveTo(px, py); x.lineTo(px + Math.cos(a) * l, py + Math.sin(a) * l); x.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 16; t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(FIBRE_TILES, FIBRE_TILES);
+  return t;
+}
+
+// Point + outward normal on the head ellipsoid, for placing facial features
+const HEAD_C = new THREE.Vector3(0, 2.45, 0), HEAD_R = new THREE.Vector3(0.67, 0.59, 0.62); // HEAD_R is set per style
+function onHead(yaw, pitch, lift = 0) {
+  const d = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
+  const p = new THREE.Vector3(d.x * HEAD_R.x, d.y * HEAD_R.y, d.z * HEAD_R.z);
+  const nrm = new THREE.Vector3(p.x / HEAD_R.x ** 2, p.y / HEAD_R.y ** 2, p.z / HEAD_R.z ** 2).normalize();
+  return { p: p.addScaledVector(nrm, lift).add(HEAD_C), n: nrm };
+}
+function feature(mesh, yaw, pitch, lift = 0) {
+  const { p, n } = onHead(yaw, pitch, lift);
+  const g = new THREE.Group();
+  g.position.copy(p);
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  g.add(mesh);
+  return g;
+}
+const mesh = (geo, mat) => new THREE.Mesh(geo, mat);
+
+const kidParts = {};
+function rebuildKidBody() {
+  for (const c of [...kid.children]) { kid.remove(c); c.traverse?.((o) => o.geometry?.dispose()); }
+  buildKidBody();
+}
+
+function buildKidBody() {
+  const M = kidMats, K = kidStyle;
+  M.skin.color.set(K.skin); M.hair.color.set(K.hair); M.shorts.color.set(K.shorts);
+  HEAD_R.set(...(K.head === 'onigiri' ? [0.7, 0.6, 0.62] : [0.67, 0.59, 0.62]));
+  // legs + shoes
+  for (const s of [-1, 1]) {
+    const leg = mesh(new THREE.CapsuleGeometry(0.1, 0.5, 6, 12), M.skin); leg.position.set(s * 0.2, 0.52, 0); kid.add(leg);
+    const sock = mesh(new THREE.CylinderGeometry(0.108, 0.108, 0.16, 16), M.sock); sock.position.set(s * 0.2, 0.24, 0); kid.add(sock);
+    const shoe = mesh(new RoundedBoxGeometry(0.3, 0.16, 0.46, 4, 0.07), M.shoe); shoe.position.set(s * 0.2, 0.09, 0.06); kid.add(shoe);
+    const sole = mesh(new RoundedBoxGeometry(0.31, 0.05, 0.47, 3, 0.02), M.sole); sole.position.set(s * 0.2, 0.025, 0.06); kid.add(sole);
+  }
+  const shorts = mesh(new RoundedBoxGeometry(0.86, 0.38, 0.58, 4, 0.13), M.shorts); shorts.position.y = 0.92; kid.add(shorts);
+  // one knitted torso: the front face carries the hidden QR, the other faces plain knit
+  const torsoGeo = new RoundedBoxGeometry(0.92, 0.8, 0.58, 5, 0.2);
+  const torso = mesh(torsoGeo, M.shirt);
+  torso.position.y = 1.43; kid.add(torso);
+  // measure the front face so stitches map 1:1 onto it
+  const g4 = torsoGeo.groups[4], P4 = torsoGeo.attributes.position, I4 = torsoGeo.index;
+  let xmax = 0, ymax = 0;
+  for (let i = g4.start; i < g4.start + g4.count; i++) { const v = I4 ? I4.getX(i) : i; xmax = Math.max(xmax, P4.getX(v)); ymax = Math.max(ymax, P4.getY(v)); }
+  kidParts.face = { w: xmax * 2, h: ymax * 2, flatW: 0.92 - 0.4, flatH: 0.8 - 0.4, cx: 0, cy: 1.43, z: 0.29 };
+  // hi-res close-up of the hidden QR patch, sitting exactly over the same stitches
+  const macro = mesh(new THREE.PlaneGeometry(1, 1), macroMat); kid.add(macro);
+  kidParts.macro = macro;
+  const neck = mesh(new THREE.CylinderGeometry(0.12, 0.13, 0.16, 16), M.skin); neck.position.y = 1.86; kid.add(neck);
+
+  // arms on shoulder pivots so they can wave
+  for (const s of [-1, 1]) {
+    const arm = new THREE.Group(); arm.position.set(s * 0.5, 1.72, 0);
+    const sleeve = mesh(new THREE.CapsuleGeometry(0.135, 0.2, 6, 12), sleeveMat); sleeve.position.y = -0.17; arm.add(sleeve);
+    const fore = mesh(new THREE.CapsuleGeometry(0.09, 0.3, 6, 12), M.skin); fore.position.y = -0.5; arm.add(fore);
+    const hand = mesh(new THREE.SphereGeometry(0.11, 16, 12), M.skin); hand.position.y = -0.74; hand.scale.set(1, 1.1, 0.8); arm.add(hand);
+    kid.add(arm);
+    kidParts[s < 0 ? 'armR' : 'armL'] = arm; // kid's right arm is on the viewer's left
+  }
+
+  // head
+  const head = new THREE.Group();
+  const skullGeo = new THREE.SphereGeometry(1, 40, 28);
+  if (K.head === 'onigiri') { // rice-ball head: full round cheeks, narrower crown
+    const P = skullGeo.attributes.position;
+    for (let i = 0; i < P.count; i++) {
+      const y = P.getY(i), k = 1 + 0.2 * Math.max(0, -y) - 0.1 * Math.max(0, y);
+      P.setXYZ(i, P.getX(i) * k, y, P.getZ(i) * (1 + 0.08 * Math.max(0, -y)));
+    }
+    skullGeo.computeVertexNormals();
+  }
+  const skull = mesh(skullGeo, M.skin); skull.scale.copy(HEAD_R); skull.position.copy(HEAD_C); head.add(skull);
+  for (const s of [-1, 1]) {
+    const ear = mesh(new THREE.SphereGeometry(0.14, 16, 12), M.skin); ear.scale.set(0.5, 1, 0.8); ear.position.set(s * 0.66, 2.42, 0); head.add(ear);
+  }
+  // hair: a cap pushed back to show the forehead, plus messy tufts and a cowlick
+  const cap = mesh(new THREE.SphereGeometry(1, 36, 20, 0, Math.PI * 2, 0, 1.38), M.hair);
+  cap.scale.set(0.695, 0.625, 0.655); cap.rotation.x = -0.5; cap.position.set(0, 2.5, -0.03); head.add(cap);
+  const TR = rand(77);
+  for (let i = 0; i < (K.tufts ? 14 : 0); i++) {
+    const tuft = mesh(new THREE.SphereGeometry(1, 10, 8), M.hair); tuft.scale.set(0.07, 0.17, 0.05);
+    const yaw = (TR() - 0.5) * 2.6, pitch = 0.45 + TR() * 0.5;
+    const { p, n } = onHead(yaw, pitch, 0.02);
+    tuft.position.copy(p).addScaledVector(n, 0.03);
+    tuft.quaternion.setFromUnitVectors(UP, n.clone().add(new THREE.Vector3((TR() - 0.5) * 0.6, 0.3, 0.25)).normalize());
+    head.add(tuft);
+  }
+  const cow = mesh(new THREE.TorusGeometry(0.08, 0.025, 8, 20, Math.PI * 1.4), M.hair);
+  cow.position.set(0.05, 3.08, -0.02); cow.rotation.set(0, 0.3, 0.6); if (K.tufts) head.add(cow);
+
+  // face
+  const eyes = [];
+  for (const s of [-1, 1]) {
+    const eye = new THREE.Group();
+    if (K.eyes === 'dark') { // solid dark oval eyes with a single highlight
+      const iris = mesh(new THREE.SphereGeometry(0.1, 20, 14), M.pupil); iris.scale.set(0.8, 1.1, 0.4); eye.add(iris);
+      const glint = mesh(new THREE.SphereGeometry(0.022, 8, 6), M.eyeWhite); glint.position.set(0.025, 0.04, 0.04); eye.add(glint);
+    } else {
+      const white = mesh(new THREE.SphereGeometry(0.12, 20, 14), M.eyeWhite); white.scale.set(0.95, 1.15, 0.45); eye.add(white);
+      const pupil = mesh(new THREE.SphereGeometry(0.065, 16, 12), M.pupil); pupil.position.set(0.025, -0.01, 0.045); pupil.scale.z = 0.5; eye.add(pupil);
+      const glint = mesh(new THREE.SphereGeometry(0.018, 8, 6), M.eyeWhite); glint.position.set(0.05, 0.035, 0.075); eye.add(glint);
+    }
+    const g = feature(eye, s * 0.32, 0.1, -0.01); head.add(g); eyes.push(eye);
+    // thin brows, one cocked up for the cheeky look
+    if (K.brows === 'thick') {
+      const brow = mesh(new THREE.CapsuleGeometry(0.045, 0.16, 6, 12), M.hair);
+      brow.rotation.z = Math.PI / 2 + s * 0.12; brow.scale.z = 0.6;
+      head.add(feature(brow, s * 0.3, 0.33, 0.01));
+    } else {
+      const brow = mesh(new THREE.TorusGeometry(0.1, 0.017, 6, 16, Math.PI * 0.7), M.hair);
+      brow.rotation.z = Math.PI * 0.15 + (s > 0 ? 0.25 : 0);
+      head.add(feature(brow, s * 0.32, s > 0 ? 0.36 : 0.31, 0.005));
+    }
+    if (K.cheeks) {
+      const cheek = mesh(new THREE.SphereGeometry(0.11, 16, 10), M.cheek); cheek.scale.set(1, 0.7, 0.25);
+      head.add(feature(cheek, s * 0.52, -0.12, -0.012));
+    }
+  }
+  kidParts.eyes = eyes;
+  const nose = mesh(new THREE.SphereGeometry(0.05, 12, 10), M.skinShade); head.add(feature(nose, 0, -0.03, 0.01));
+  // lopsided grin: an arc tilted up on one side
+  const grin = mesh(new THREE.TorusGeometry(0.16, 0.028, 8, 24, Math.PI * 0.85), M.mouth);
+  grin.rotation.z = Math.PI + 0.35; head.add(feature(grin, 0.05, -0.27, 0.0));
+  const dimple = mesh(new THREE.SphereGeometry(0.02, 8, 6), M.skinShade); head.add(feature(dimple, 0.3, -0.2, 0));
+  kid.add(head);
+  kidParts.head = head;
+}
+buildKidBody();
+
+function buildKid(qr) {
+  const K = kidStyle;
+  const yarn = K.yarn || PALETTES[state.palette].tile; // default: Breton stripes in the palette's dark yarn
+  for (const mat of [macroMat, kidMats.shirt, sleeveMat]) mat.map?.dispose();
+  const knit = knitTexture(yarn, K.ground, K.stripes);
+  kidMats.shirt.map = knitFit(knit, 0.92, 0.8); kidMats.shirt.bumpMap = knit; kidMats.shirt.bumpScale = 1.5; kidMats.shirt.needsUpdate = true;
+  const sl = knitFit(knit.clone(), 0.85, 0.47); sl.needsUpdate = true;
+  sleeveMat.map = sl; sleeveMat.bumpMap = sl; sleeveMat.needsUpdate = true;
+
+  // the hidden fibre grid: a patch of woven QR tiles on the chest, one tile centred on the zoom point
+  const fib = fibreTile(qr, K.fibreDark || yarn, K.fibreLight);
+  macroMat.map = fib; macroMat.bumpMap = fib; macroMat.needsUpdate = true;
+  const macro = kidParts.macro, face = kidParts.face;
+  macro.geometry.dispose(); macro.geometry = new THREE.PlaneGeometry(FIBRE_TILE * FIBRE_TILES, FIBRE_TILE * FIBRE_TILES);
+  const R = rand(hash(state.url + 'spot')); // "any part of the shirt": the spot moves with the link
+  macro.position.set(face.cx + (R() - 0.5) * face.flatW * 0.7, face.cy + (R() - 0.5) * face.flatH * 0.7, face.z + 0.0006);
+}
+
+const _lp = new THREE.Vector3(), _ln = new THREE.Vector3(), _kq = new THREE.Quaternion();
+function kidFrame(p, time) {
+  const e = easeInOut(p);
+  const life = 1 - easeInOut(clamp01(p * 1.6)); // idle motion settles quickly so the camera can lock on
+  kid.position.y = Math.abs(Math.sin(time * 2.2)) * 0.05 * life;
+  kid.rotation.y = Math.sin(time * 0.6) * 0.35 * life + state.spin * life;
+  kidParts.head.rotation.z = Math.sin(time * 1.3) * 0.06 * life;
+  kidParts.head.rotation.x = Math.sin(time * 0.9) * 0.04 * life;
+  kidParts.armL.rotation.z = (2.5 + Math.sin(time * 7) * 0.35) * life + 0.12 * (1 - life); // waving
+  kidParts.armR.rotation.z = -0.14 - Math.sin(time * 1.4) * 0.05 * life;
+  const blink = (time % 3.6) < 0.12 ? 0.1 : 1;
+  for (const eye of kidParts.eyes) eye.scale.y = reduceMotion ? 1 : blink;
+
+  // Camera: full-body shot → straight into the label; distance zooms geometrically so it feels constant-speed
+  kid.updateMatrixWorld(true);
+  kidParts.macro.getWorldPosition(_lp);
+  _ln.set(0, 0, 1).applyQuaternion(kid.getWorldQuaternion(_kq));
+  const dFull = fitDistance(2.8, 3.6) * 1.1;
+  const dLabel = fitDistance(FIBRE_TILE, FIBRE_TILE) * 1.12;
+  const d = dFull * Math.pow(dLabel / dFull, e);
+  const target = new THREE.Vector3(0, 1.65, 0).lerp(_lp, easeInOut(clamp01(p * 1.25)));
+  const dir = new THREE.Vector3(0, 0.12, 1).normalize().lerp(_ln, e).normalize();
+  camera.position.copy(target).addScaledVector(dir, d);
+  camera.up.set(0, 1, 0);
+  // fibres resolve into the QR grid only in the last stretch of the zoom
+  macroMat.opacity = THREE.MathUtils.smoothstep(e, 0.8, 0.97);
+  kidParts.macro.visible = macroMat.opacity > 0.001;
+  camera.lookAt(target);
+  // clip planes follow the zoom so the fabric neither clips nor flickers up close
+  camera.near = Math.max(0.004, d * 0.05); camera.far = d * 40 + 20;
+  camera.updateProjectionMatrix();
+}
+
+// ------------------------------------------------------------------
 // Layout
 // ------------------------------------------------------------------
 const panel = document.getElementById('panel');
@@ -713,10 +1029,17 @@ function toggleBloom(force) {
   state.target = typeof force === 'number' ? force : state.target ? 0 : 1;
   const open = state.target === 1;
   document.body.classList.toggle('is-bloomed', open);
-  hint.textContent = open ? 'Tap to gather the bouquet' : 'Tap the bouquet to bloom a QR code';
+  syncCopy();
   hint.classList.add('is-quiet');
-  bloomBtn.textContent = open ? 'Gather it' : 'Bloom it';
   syncShare();
+}
+
+function syncCopy() {
+  const open = state.target === 1, isKid = isKidFig(state.flower);
+  hint.textContent = isKid
+    ? (open ? 'Tap to zoom back out' : 'Tap the kid to zoom into the shirt')
+    : (open ? 'Tap to gather the bouquet' : 'Tap the bouquet to bloom a QR code');
+  bloomBtn.textContent = isKid ? (open ? 'Zoom out' : 'Zoom in') : (open ? 'Gather it' : 'Bloom it');
 }
 
 function shareUrl() {
@@ -736,8 +1059,8 @@ function syncShare() {
 
 function renderControls() {
   const btn = (id) => `<button role="radio" data-id="${id}" aria-checked="${id === state.flower}">${FLOWER_ICONS[id]}${id[0].toUpperCase() + id.slice(1)}</button>`;
-  $('flowers').innerHTML = Object.keys(FLOWER_ICONS).filter((id) => !BUDDIES.has(id)).map(btn).join('');
-  $('buddies').innerHTML = [...BUDDIES].map(btn).join('');
+  $('flowers').innerHTML = Object.keys(FLOWER_ICONS).filter((id) => !BUDDIES.has(id) && !isKidFig(id)).map(btn).join('');
+  $('buddies').innerHTML = [...BUDDIES, ...Object.keys(KID_FIGURES)].map(btn).join('');
   $('palettes').innerHTML = Object.entries(PALETTES).map(([id, p]) =>
     `<button role="radio" data-id="${id}" aria-checked="${id === state.palette}"><i style="background:${p.petal}"></i>${p.name}</button>`).join('');
 }
@@ -746,7 +1069,7 @@ function pickFigure(e) {
   const b = e.target.closest('button'); if (!b || b.dataset.id === state.flower) return;
   state.flower = b.dataset.id;
   document.querySelectorAll('#flowers button, #buddies button').forEach((x) => x.setAttribute('aria-checked', x === b));
-  build(); syncShare();
+  build(); syncCopy(); syncShare();
 }
 $('flowers').addEventListener('click', pickFigure);
 $('buddies').addEventListener('click', pickFigure);
@@ -832,6 +1155,7 @@ grip.addEventListener('click', () => {
 // ------------------------------------------------------------------
 // Boot
 // ------------------------------------------------------------------
+const requestedFigure = new URLSearchParams(location.search).get('f'); // kept for figures that load later
 {
   const q = new URLSearchParams(location.search);
   if (q.get('u')) state.url = q.get('u');
@@ -841,6 +1165,14 @@ grip.addEventListener('click', () => {
 }
 renderControls();
 build();
+syncCopy();
+if (['localhost', '127.0.0.1'].includes(location.hostname)) {
+  import('./figures.local.js').then(({ default: figs }) => {
+    for (const [id, f] of Object.entries(figs)) { KID_FIGURES[id] = { ...KID_DEFAULT, ...f.style }; FLOWER_ICONS[id] = f.icon; }
+    renderControls();
+    if (KID_FIGURES[requestedFigure] && state.flower !== requestedFigure) { state.flower = requestedFigure; renderControls(); build(); syncCopy(); syncShare(); }
+  }).catch(() => {});
+}
 syncShare();
 addEventListener('resize', resize);
 new ResizeObserver(resize).observe(panel);
