@@ -690,6 +690,7 @@ const KID_DEFAULT = {
   shorts: '#2e3a57', hair: '#2b1d17', skin: '#f1c29f',
   head: 'round', brows: 'thin', eyes: 'classic', tufts: true, cheeks: true,
   hairCap: [1.38, -0.5, 1], headScale: 1, nose: true, mouth: 'grin', eyeSpread: 0.32, browSize: 1, earSize: 1,
+  eyeScale: 1, eyePitch: 0.1, glint: 0.022, shoe: '#f3f1ec', sole: '#d94f3d', toon: false,
   fibreDark: null, fibreLight: '#f4efe4',
 };
 let kidStyle = KID_DEFAULT;
@@ -833,6 +834,31 @@ function feature(mesh, yaw, pitch, lift = 0) {
 const mesh = (geo, mat) => new THREE.Mesh(geo, mat);
 
 const kidParts = {};
+// Anime look: flat cel shading plus an inverted-hull black outline
+const toonGradient = (() => {
+  const t = new THREE.DataTexture(new Uint8Array([90, 90, 90, 255, 200, 200, 200, 255, 255, 255, 255, 255]), 3, 1);
+  t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; return t;
+})();
+const outlineMat = new THREE.MeshBasicMaterial({ color: '#141414', side: THREE.BackSide });
+outlineMat.onBeforeCompile = (sh) => {
+  sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', 'vec3 transformed = position + normal * 0.014;');
+};
+const toonCopies = new Map(); // original material → toon twin (kept in sync when textures change)
+function toonify(root) {
+  const meshes = [];
+  root.traverse((o) => { if (o.isMesh && o !== kidParts.macro && o.material !== outlineMat) meshes.push(o); });
+  for (const o of meshes) {
+    const src = o.material;
+    if (!toonCopies.has(src)) toonCopies.set(src, new THREE.MeshToonMaterial({ gradientMap: toonGradient }));
+    const t = toonCopies.get(src);
+    t.color.copy(src.color); t.map = src.map;
+    o.material = t;
+    o.geometry.computeBoundingSphere();
+    if (o.geometry.boundingSphere.radius * Math.max(o.scale.x, o.scale.y) > 0.07) o.add(new THREE.Mesh(o.geometry, outlineMat));
+  }
+}
+function syncToon() { for (const [src, t] of toonCopies) { t.color.copy(src.color); t.map = src.map; t.needsUpdate = true; } }
+
 function rebuildKidBody() {
   for (const c of [...kid.children]) { kid.remove(c); c.traverse?.((o) => o.geometry?.dispose()); }
   buildKidBody();
@@ -840,7 +866,7 @@ function rebuildKidBody() {
 
 function buildKidBody() {
   const M = kidMats, K = kidStyle;
-  M.skin.color.set(K.skin); M.hair.color.set(K.hair); M.shorts.color.set(K.shorts);
+  M.skin.color.set(K.skin); M.hair.color.set(K.hair); M.shorts.color.set(K.shorts); M.shoe.color.set(K.shoe); M.sole.color.set(K.sole);
   HEAD_R.set(...(K.head === 'onigiri' ? [0.7, 0.6, 0.62] : [0.67, 0.59, 0.62]));
   // legs + shoes
   for (const s of [-1, 1]) {
@@ -901,16 +927,21 @@ function buildKidBody() {
   for (const s of [-1, 1]) {
     const eye = new THREE.Group();
     if (K.eyes === 'dark') { // solid dark oval eyes with a single highlight
-      const iris = mesh(new THREE.SphereGeometry(0.1, 20, 14), M.pupil); iris.scale.set(0.85, 1.15, 0.35); eye.add(iris);
-      const glint = mesh(new THREE.SphereGeometry(0.022, 8, 6), M.eyeWhite); glint.position.set(0.025, 0.04, 0.04); eye.add(glint);
+      const iris = mesh(new THREE.SphereGeometry(0.1 * K.eyeScale, 24, 16), M.pupil); iris.scale.set(0.9, 1.1, 0.3); eye.add(iris);
+      const glint = mesh(new THREE.SphereGeometry(K.glint, 16, 10), M.eyeWhite); glint.scale.z = 0.4;
+      glint.position.set(0.012 * K.eyeScale, 0.01 * K.eyeScale, 0.032 * K.eyeScale); eye.add(glint);
     } else {
       const white = mesh(new THREE.SphereGeometry(0.12, 20, 14), M.eyeWhite); white.scale.set(0.95, 1.15, 0.45); eye.add(white);
       const pupil = mesh(new THREE.SphereGeometry(0.065, 16, 12), M.pupil); pupil.position.set(0.025, -0.01, 0.045); pupil.scale.z = 0.5; eye.add(pupil);
       const glint = mesh(new THREE.SphereGeometry(0.018, 8, 6), M.eyeWhite); glint.position.set(0.05, 0.035, 0.075); eye.add(glint);
     }
-    const g = feature(eye, s * K.eyeSpread, 0.1, -0.01); head.add(g); eyes.push(eye);
+    const g = feature(eye, s * K.eyeSpread, K.eyePitch, -0.01); head.add(g); eyes.push(eye);
     // thin brows, one cocked up for the cheeky look
-    if (K.brows === 'thick') {
+    if (K.brows === 'bushy') { // heavy curved brows
+      const brow = mesh(new THREE.TorusGeometry(0.11 * K.browSize, 0.035 * K.browSize, 10, 20, Math.PI * 0.75), M.hair);
+      brow.rotation.z = Math.PI * 0.125 - s * 0.12; brow.scale.z = 0.5;
+      head.add(feature(brow, s * (K.eyeSpread + 0.02), K.eyePitch + 0.17, 0.02));
+    } else if (K.brows === 'thick') {
       const brow = mesh(new THREE.CapsuleGeometry(0.04 * K.browSize, 0.1 * K.browSize, 6, 12), M.hair);
       brow.rotation.z = Math.PI / 2 - s * 0.18; brow.scale.z = 0.55;
       head.add(feature(brow, s * (K.eyeSpread + 0.04), 0.3, 0.012));
@@ -926,7 +957,10 @@ function buildKidBody() {
   }
   kidParts.eyes = eyes;
   if (K.nose) { const nose = mesh(new THREE.SphereGeometry(0.05, 12, 10), M.skinShade); head.add(feature(nose, 0, -0.03, 0.01)); }
-  if (K.mouth === 'open') { // small open mouth with a tongue
+  if (K.mouth === 'smile') { // a small, slightly lopsided smile line
+    const line = mesh(new THREE.TorusGeometry(0.07, 0.012, 6, 16, Math.PI * 0.7), M.pupil);
+    line.rotation.z = Math.PI + 0.3; head.add(feature(line, 0.04, -0.33, 0.004));
+  } else if (K.mouth === 'open') { // small open mouth with a tongue
     const mouth = new THREE.Group();
     const hole = mesh(new THREE.SphereGeometry(0.1, 24, 12), M.mouth); hole.scale.set(0.95, 0.5, 0.18); mouth.add(hole);
     const tongue = mesh(new THREE.SphereGeometry(0.06, 16, 10), M.cheek); tongue.scale.set(1.15, 0.55, 0.2); tongue.position.set(0, -0.022, 0.012); mouth.add(tongue);
@@ -943,6 +977,7 @@ function buildKidBody() {
   pivot.scale.setScalar(K.headScale);
   kid.add(pivot);
   kidParts.head = pivot;
+  if (K.toon) toonify(kid);
   // framing for the full-body shot follows the figure's real size
   const box = new THREE.Box3().setFromObject(kid);
   kidParts.fit = new THREE.Vector2(Math.max(2.8, box.max.x - box.min.x + 0.6), box.max.y - box.min.y + 0.3);
@@ -960,6 +995,7 @@ function buildKid(qr) {
   sleeveMat.map = sl; sleeveMat.bumpMap = sl; sleeveMat.needsUpdate = true;
 
   // the hidden fibre grid: a patch of woven QR tiles on the chest, one tile centred on the zoom point
+  if (K.toon) syncToon();
   const fib = fibreTile(qr, K.fibreDark || yarn, K.fibreLight);
   macroMat.map = fib; macroMat.bumpMap = fib; macroMat.needsUpdate = true;
   const macro = kidParts.macro, face = kidParts.face;
