@@ -1315,7 +1315,7 @@ const requestedFigure = new URLSearchParams(location.search).get('f'); // kept f
 renderControls();
 build();
 syncCopy();
-if (['localhost', '127.0.0.1'].includes(location.hostname)) {
+{ // extra figures (optional file; silently skipped if it isn't there)
   import('./figures.local.js').then(({ default: figs }) => {
     for (const [id, f] of Object.entries(figs)) { KID_FIGURES[id] = { ...KID_DEFAULT, ...f.style }; FLOWER_ICONS[id] = f.icon; }
     renderControls();
