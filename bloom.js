@@ -682,13 +682,14 @@ function placeCamera(e) {
 const KID = 'kid';
 const KID_FIGURES = { kid: null };            // figure id → style override (null = default look)
 const isKidFig = (id) => id in KID_FIGURES;
-const KID_MS = 1700;
+const KID_MS = 2100;
 
 // Look of the kid. A local-only module (see boot) can swap this for a personal fan-art style.
 const KID_DEFAULT = {
   yarn: null, ground: '#f4efe4', stripes: true,       // null yarn = palette's dark colour
   shorts: '#2e3a57', hair: '#2b1d17', skin: '#f1c29f',
   head: 'round', brows: 'thin', eyes: 'classic', tufts: true, cheeks: true,
+  hairCap: [1.38, -0.5, 1], headScale: 1, nose: true, mouth: 'grin', eyeSpread: 0.32, browSize: 1, earSize: 1,
   fibreDark: null, fibreLight: '#f4efe4',
 };
 let kidStyle = KID_DEFAULT;
@@ -790,12 +791,35 @@ function fibreTile(qr, darkHex, lightHex = CREAM) {
   return t;
 }
 
-// Point + outward normal on the head ellipsoid, for placing facial features
+// Head shape. 'onigiri' widens the lower face into round cheeks and narrows the crown,
+// smoothly (the factor fades to zero at the poles). Skull, hair and features all use it.
 const HEAD_C = new THREE.Vector3(0, 2.45, 0), HEAD_R = new THREE.Vector3(0.67, 0.59, 0.62); // HEAD_R is set per style
+function shapeHead(v) { // v: point on the unit sphere → shaped point (before HEAD_R scaling)
+  if (kidStyle.head !== 'onigiri') return v;
+  const y = v.y, band = Math.sqrt(Math.max(0, 1 - y * y));
+  const f = 1 + 0.3 * (0.45 - y) * band;
+  return v.set(v.x * f, y > 0 ? y * 0.9 : y * 1.02, v.z * (1 + 0.12 * (0.3 - y) * band));
+}
+function headGeometry(thetaLength = Math.PI, grow = 1) {
+  const g = new THREE.SphereGeometry(1, 48, 32, 0, Math.PI * 2, 0, thetaLength);
+  const P = g.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < P.count; i++) {
+    shapeHead(v.fromBufferAttribute(P, i));
+    P.setXYZ(i, v.x * HEAD_R.x * grow, v.y * HEAD_R.y * grow, v.z * HEAD_R.z * grow);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+function headPoint(yaw, pitch) {
+  const v = shapeHead(new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch)));
+  return v.multiply(HEAD_R);
+}
+// Point + outward normal on the head surface, for placing facial features
 function onHead(yaw, pitch, lift = 0) {
-  const d = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
-  const p = new THREE.Vector3(d.x * HEAD_R.x, d.y * HEAD_R.y, d.z * HEAD_R.z);
-  const nrm = new THREE.Vector3(p.x / HEAD_R.x ** 2, p.y / HEAD_R.y ** 2, p.z / HEAD_R.z ** 2).normalize();
+  const p = headPoint(yaw, pitch), e = 0.01;
+  const t1 = headPoint(yaw + e, pitch).sub(p), t2 = headPoint(yaw, pitch + e).sub(p);
+  const nrm = new THREE.Vector3().crossVectors(t1, t2).normalize();
+  if (nrm.dot(p) < 0) nrm.negate();
   return { p: p.addScaledVector(nrm, lift).add(HEAD_C), n: nrm };
 }
 function feature(mesh, yaw, pitch, lift = 0) {
@@ -852,22 +876,14 @@ function buildKidBody() {
 
   // head
   const head = new THREE.Group();
-  const skullGeo = new THREE.SphereGeometry(1, 40, 28);
-  if (K.head === 'onigiri') { // rice-ball head: full round cheeks, narrower crown
-    const P = skullGeo.attributes.position;
-    for (let i = 0; i < P.count; i++) {
-      const y = P.getY(i), k = 1 + 0.2 * Math.max(0, -y) - 0.1 * Math.max(0, y);
-      P.setXYZ(i, P.getX(i) * k, y, P.getZ(i) * (1 + 0.08 * Math.max(0, -y)));
-    }
-    skullGeo.computeVertexNormals();
-  }
-  const skull = mesh(skullGeo, M.skin); skull.scale.copy(HEAD_R); skull.position.copy(HEAD_C); head.add(skull);
+  const skull = mesh(headGeometry(), M.skin); skull.position.copy(HEAD_C); head.add(skull);
   for (const s of [-1, 1]) {
-    const ear = mesh(new THREE.SphereGeometry(0.14, 16, 12), M.skin); ear.scale.set(0.5, 1, 0.8); ear.position.set(s * 0.66, 2.42, 0); head.add(ear);
+    const ear = mesh(new THREE.SphereGeometry(0.14 * K.earSize, 16, 12), M.skin); ear.scale.set(0.5, 1, 0.8); ear.position.copy(onHead(s * Math.PI / 2, -0.05).p); head.add(ear);
   }
   // hair: a cap pushed back to show the forehead, plus messy tufts and a cowlick
-  const cap = mesh(new THREE.SphereGeometry(1, 36, 20, 0, Math.PI * 2, 0, 1.38), M.hair);
-  cap.scale.set(0.695, 0.625, 0.655); cap.rotation.x = -0.5; cap.position.set(0, 2.5, -0.03); head.add(cap);
+  const [capTheta, capTilt, capScale] = K.hairCap;
+  const cap = mesh(headGeometry(capTheta, 1.035 * capScale), M.hair);
+  cap.rotation.x = capTilt; cap.position.copy(HEAD_C).add(new THREE.Vector3(0, 0.02, -0.02)); head.add(cap);
   const TR = rand(77);
   for (let i = 0; i < (K.tufts ? 14 : 0); i++) {
     const tuft = mesh(new THREE.SphereGeometry(1, 10, 8), M.hair); tuft.scale.set(0.07, 0.17, 0.05);
@@ -885,19 +901,19 @@ function buildKidBody() {
   for (const s of [-1, 1]) {
     const eye = new THREE.Group();
     if (K.eyes === 'dark') { // solid dark oval eyes with a single highlight
-      const iris = mesh(new THREE.SphereGeometry(0.1, 20, 14), M.pupil); iris.scale.set(0.8, 1.1, 0.4); eye.add(iris);
+      const iris = mesh(new THREE.SphereGeometry(0.1, 20, 14), M.pupil); iris.scale.set(0.85, 1.15, 0.35); eye.add(iris);
       const glint = mesh(new THREE.SphereGeometry(0.022, 8, 6), M.eyeWhite); glint.position.set(0.025, 0.04, 0.04); eye.add(glint);
     } else {
       const white = mesh(new THREE.SphereGeometry(0.12, 20, 14), M.eyeWhite); white.scale.set(0.95, 1.15, 0.45); eye.add(white);
       const pupil = mesh(new THREE.SphereGeometry(0.065, 16, 12), M.pupil); pupil.position.set(0.025, -0.01, 0.045); pupil.scale.z = 0.5; eye.add(pupil);
       const glint = mesh(new THREE.SphereGeometry(0.018, 8, 6), M.eyeWhite); glint.position.set(0.05, 0.035, 0.075); eye.add(glint);
     }
-    const g = feature(eye, s * 0.32, 0.1, -0.01); head.add(g); eyes.push(eye);
+    const g = feature(eye, s * K.eyeSpread, 0.1, -0.01); head.add(g); eyes.push(eye);
     // thin brows, one cocked up for the cheeky look
     if (K.brows === 'thick') {
-      const brow = mesh(new THREE.CapsuleGeometry(0.045, 0.16, 6, 12), M.hair);
-      brow.rotation.z = Math.PI / 2 + s * 0.12; brow.scale.z = 0.6;
-      head.add(feature(brow, s * 0.3, 0.33, 0.01));
+      const brow = mesh(new THREE.CapsuleGeometry(0.04 * K.browSize, 0.1 * K.browSize, 6, 12), M.hair);
+      brow.rotation.z = Math.PI / 2 - s * 0.18; brow.scale.z = 0.55;
+      head.add(feature(brow, s * (K.eyeSpread + 0.04), 0.3, 0.012));
     } else {
       const brow = mesh(new THREE.TorusGeometry(0.1, 0.017, 6, 16, Math.PI * 0.7), M.hair);
       brow.rotation.z = Math.PI * 0.15 + (s > 0 ? 0.25 : 0);
@@ -909,13 +925,28 @@ function buildKidBody() {
     }
   }
   kidParts.eyes = eyes;
-  const nose = mesh(new THREE.SphereGeometry(0.05, 12, 10), M.skinShade); head.add(feature(nose, 0, -0.03, 0.01));
-  // lopsided grin: an arc tilted up on one side
-  const grin = mesh(new THREE.TorusGeometry(0.16, 0.028, 8, 24, Math.PI * 0.85), M.mouth);
-  grin.rotation.z = Math.PI + 0.35; head.add(feature(grin, 0.05, -0.27, 0.0));
-  const dimple = mesh(new THREE.SphereGeometry(0.02, 8, 6), M.skinShade); head.add(feature(dimple, 0.3, -0.2, 0));
-  kid.add(head);
-  kidParts.head = head;
+  if (K.nose) { const nose = mesh(new THREE.SphereGeometry(0.05, 12, 10), M.skinShade); head.add(feature(nose, 0, -0.03, 0.01)); }
+  if (K.mouth === 'open') { // small open mouth with a tongue
+    const mouth = new THREE.Group();
+    const hole = mesh(new THREE.SphereGeometry(0.1, 24, 12), M.mouth); hole.scale.set(0.95, 0.5, 0.18); mouth.add(hole);
+    const tongue = mesh(new THREE.SphereGeometry(0.06, 16, 10), M.cheek); tongue.scale.set(1.15, 0.55, 0.2); tongue.position.set(0, -0.022, 0.012); mouth.add(tongue);
+    head.add(feature(mouth, 0.02, -0.33, 0.004));
+  } else {
+    // lopsided grin: an arc tilted up on one side
+    const grin = mesh(new THREE.TorusGeometry(0.16, 0.028, 8, 24, Math.PI * 0.85), M.mouth);
+    grin.rotation.z = Math.PI + 0.35; head.add(feature(grin, 0.05, -0.27, 0.0));
+    const dimple = mesh(new THREE.SphereGeometry(0.02, 8, 6), M.skinShade); head.add(feature(dimple, 0.3, -0.2, 0));
+  }
+  // head pivots at the neck so it can be scaled per style and nod naturally
+  const neckY = 1.86, pivot = new THREE.Group();
+  pivot.position.set(0, neckY, 0); head.position.set(0, -neckY, 0); pivot.add(head);
+  pivot.scale.setScalar(K.headScale);
+  kid.add(pivot);
+  kidParts.head = pivot;
+  // framing for the full-body shot follows the figure's real size
+  const box = new THREE.Box3().setFromObject(kid);
+  kidParts.fit = new THREE.Vector2(Math.max(2.8, box.max.x - box.min.x + 0.6), box.max.y - box.min.y + 0.3);
+  kidParts.fitCenter = box.getCenter(new THREE.Vector3()).setX(0).setZ(0);
 }
 buildKidBody();
 
@@ -940,7 +971,7 @@ function buildKid(qr) {
 const _lp = new THREE.Vector3(), _ln = new THREE.Vector3(), _kq = new THREE.Quaternion();
 function kidFrame(p, time) {
   const e = easeInOut(p);
-  const life = 1 - easeInOut(clamp01(p * 1.6)); // idle motion settles quickly so the camera can lock on
+  const life = 1 - easeInOut(clamp01(p * 2.2)); // idle motion settles early so the camera can lock on
   kid.position.y = Math.abs(Math.sin(time * 2.2)) * 0.05 * life;
   kid.rotation.y = Math.sin(time * 0.6) * 0.35 * life + state.spin * life;
   kidParts.head.rotation.z = Math.sin(time * 1.3) * 0.06 * life;
@@ -950,19 +981,23 @@ function kidFrame(p, time) {
   const blink = (time % 3.6) < 0.12 ? 0.1 : 1;
   for (const eye of kidParts.eyes) eye.scale.y = reduceMotion ? 1 : blink;
 
-  // Camera: full-body shot → straight into the label; distance zooms geometrically so it feels constant-speed
+  // Camera: one quintic ease drives a geometric (constant-feeling) zoom. The aim point and
+  // view direction are tied to the zoom *distance*, so the spot we dive into stays pinned on screen.
   kid.updateMatrixWorld(true);
   kidParts.macro.getWorldPosition(_lp);
   _ln.set(0, 0, 1).applyQuaternion(kid.getWorldQuaternion(_kq));
-  const dFull = fitDistance(2.8, 3.6) * 1.1;
-  const dLabel = fitDistance(FIBRE_TILE, FIBRE_TILE) * 1.12;
-  const d = dFull * Math.pow(dLabel / dFull, e);
-  const target = new THREE.Vector3(0, 1.65, 0).lerp(_lp, easeInOut(clamp01(p * 1.25)));
-  const dir = new THREE.Vector3(0, 0.12, 1).normalize().lerp(_ln, e).normalize();
+  const z = p * p * p * (p * (p * 6 - 15) + 10);
+  const dFull = fitDistance(kidParts.fit.x, kidParts.fit.y) * 1.1;
+  const dEnd = fitDistance(FIBRE_TILE, FIBRE_TILE) * 1.12;
+  const d = dFull * Math.pow(dEnd / dFull, z);
+  const k = (dFull - d) / (dFull - dEnd);
+  const target = kidParts.fitCenter.clone().lerp(_lp, k);
+  const dir = new THREE.Vector3(0, 0.12, 1).normalize().lerp(_ln, k).normalize();
   camera.position.copy(target).addScaledVector(dir, d);
   camera.up.set(0, 1, 0);
-  // fibres resolve into the QR grid only in the last stretch of the zoom
-  macroMat.opacity = THREE.MathUtils.smoothstep(e, 0.8, 0.97);
+  // fibres resolve into the QR grid as magnification passes a threshold, not on a timer
+  const reveal = clamp01(Math.log((dEnd * 7) / d) / Math.log(7 / 1.15));
+  macroMat.opacity = reveal * reveal * (3 - 2 * reveal);
   kidParts.macro.visible = macroMat.opacity > 0.001;
   camera.lookAt(target);
   // clip planes follow the zoom so the fabric neither clips nor flickers up close
