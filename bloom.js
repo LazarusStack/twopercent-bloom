@@ -1073,6 +1073,7 @@ function buildKid(qr) {
     knitPatch.position.copy(p).addScaledVector(n, 0.0015); knitPatch.quaternion.copy(q);
     const pk = knitTexture(kidModel.shirt || yarn, K.ground, K.stripes);
     patchMat.map?.dispose(); patchMat.map = knitFit(pk, 0.5, 0.5); patchMat.bumpMap = pk; patchMat.needsUpdate = true;
+    patchMat.color.setScalar(1.3); // knit shading averages darker than a flat colour; lift it to match the shirt
     kidParts.zoomN = n.clone();
   }
 }
