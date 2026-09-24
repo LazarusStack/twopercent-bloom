@@ -8,13 +8,13 @@ import qrcode from 'qrcode-generator';
 const DEFAULT_URL = 'mailto:twopersonclub@gmail.com';
 const CELL = 0.34;          // world size of one QR module
 const QUIET = 4;            // quiet-zone modules on the paper card (QR spec minimum)
-const BLOOM_MS = 1450;
-const BOUQUET_CENTER = new THREE.Vector3(0, 3.05, 0);
-const BOUQUET_R = 1.75;
+const BLOOM_MS = 650;
+const BOUQUET_CENTER = new THREE.Vector3(0, 3.35, 0);
+const BOUQUET_R = 2.1;
 
 const PALETTES = {
-  blush:    { name: 'Blush',    petal: '#e79bb0', center: '#f4d27a', tile: '#6d2239', leaf: '#5d7f45' },
-  peony:    { name: 'Peony',    petal: '#c9416a', center: '#f1c75b', tile: '#5a1328', leaf: '#4f7a3c' },
+  blush:    { name: 'Blush',    petal: '#f67a93', center: '#c9cf5e', tile: '#6d2239', leaf: '#5d7f45' },
+  peony:    { name: 'Peony',    petal: '#d9486f', center: '#c9cf5e', tile: '#5a1328', leaf: '#4f7a3c' },
   marigold: { name: 'Marigold', petal: '#eaa23a', center: '#8a3b12', tile: '#5b2a07', leaf: '#5d7f45' },
   lilac:    { name: 'Lilac',    petal: '#a98ddb', center: '#f6e08c', tile: '#35205e', leaf: '#557a4a' },
   club:     { name: 'Club',     petal: '#4a63ff', center: '#f6f1e4', tile: '#101b73', leaf: '#4a7141' },
@@ -40,21 +40,30 @@ const FLOWER_ICONS = {
 // ------------------------------------------------------------------
 // A petal pointing along +Y with its edges cupped and tip curled toward -Z,
 // then laid radially at `tilt` above horizontal around the flower's +Y axis.
-function petal({ len, width, cup = 0.3, curl = 0.1, tilt, yaw, y = 0, shade = [0.72, 1], su = 10, sv = 7, vein = 0.14 }) {
+const PR = rand(20260925); // phases for petal crumple — fixed so every flower of a type matches
+function petal({ len, width, cup = 0.3, curl = 0.1, tilt, yaw, y = 0, shade = [0.72, 1], su = 8, sv = 6, vein = 0.14, crumple = 0, fringe = 0, round = true }) {
   const pos = [], col = [], idx = [];
+  const ph1 = PR() * 6.283, ph2 = PR() * 6.283, amp = crumple * width;
   for (let i = 0; i <= su; i++) {
     const u = i / su;
-    const w = width * Math.sin(Math.PI * Math.pow(u, 0.62)) * (1 - 0.12 * u);
+    // Rounded "spoon" petal: narrow claw at the base, widest near the top, round cap.
+    // Pointed outline (round=false) is kept for leaves.
+    const w = round
+      ? width * (u < 0.68 ? 0.28 + 0.72 * Math.sin((Math.PI / 2) * (u / 0.68)) : Math.sqrt(Math.max(0, 1 - ((u - 0.68) / 0.32) ** 2)))
+      : width * Math.sin(Math.PI * Math.pow(u, 0.62)) * (1 - 0.12 * u);
     for (let j = 0; j <= sv; j++) {
       const v = (j / sv) * 2 - 1;
       // soft ruffle on the rim gives real petals their wavy edge
-      const ruffle = Math.sin(v * 5 + u * 3) * 0.02 * u * width;
-      pos.push(v * w, u * len, -cup * v * v * w - curl * u * u * len + ruffle);
+      const ruffle = (Math.sin(v * 5 + u * 3) * 0.02 + Math.sin(v * 13 + ph2) * 0.035 * fringe * 10 * Math.pow(u, 3)) * width;
+      // serrated tip + crumpled surface: what makes a peony read as a peony
+      const tip = 1 - fringe * Math.abs(Math.sin(v * 9 + ph1)) * Math.pow(u, 5); // small scallops, not spikes
+      const crease = amp * Math.sin(u * 9 + ph1) * Math.sin(v * 6 + ph2) * u;
+      pos.push(v * w, u * len * tip, -cup * v * v * w - curl * u * u * len + ruffle + crease);
       // base shadow → bright tip, darker midrib vein, lighter rim
-      let s = shade[0] + (shade[1] - shade[0]) * Math.pow(u, 0.8);
+      let s = shade[0] + (shade[1] - shade[0]) * Math.pow(u, 0.55);
       s *= 1 - vein * Math.exp(-v * v * 40) * (1 - u * 0.6);
       s *= 1 + 0.06 * v * v * u;
-      col.push(s, s, s);
+      col.push(s, s * (0.9 + 0.1 * u), s * (0.92 + 0.08 * u)); // deeper, warmer at the base
     }
   }
   for (let i = 0; i < su; i++) for (let j = 0; j < sv; j++) {
@@ -99,7 +108,7 @@ function stamens(n, r, h, y, seed) {
   const R = rand(seed), out = [];
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2 + R() * 0.3, rr = r * (0.5 + R() * 0.5);
-    out.push(ball(0.018, Math.cos(a) * rr, y + h * (0.6 + R() * 0.4), Math.sin(a) * rr, 1, 1, 1, 1, 6));
+    out.push(ball(0.024, Math.cos(a) * rr, y + h * (0.6 + R() * 0.4), Math.sin(a) * rr, 1, 1, 1, 1, 6));
   }
   return out;
 }
@@ -115,29 +124,30 @@ function buildFlower(type) {
   const j = (amt) => 1 + (J() - 0.5) * 2 * amt; // per-petal jitter so nothing looks stamped
   if (type === 'peony') {
     const layers = [
-      { n: 10, len: 0.5, w: 0.26, tilt: 10, cup: 0.45, curl: 0.04 },
-      { n: 9, len: 0.45, w: 0.25, tilt: 26, cup: 0.5, curl: 0.1 },
-      { n: 9, len: 0.39, w: 0.23, tilt: 42, cup: 0.55, curl: 0.18 },
-      { n: 8, len: 0.32, w: 0.2, tilt: 58, cup: 0.6, curl: 0.26 },
-      { n: 7, len: 0.25, w: 0.17, tilt: 72, cup: 0.62, curl: 0.34 },
-      { n: 5, len: 0.17, w: 0.13, tilt: 84, cup: 0.65, curl: 0.4 },
+      { n: 12, len: 0.5, w: 0.25, tilt: 16, cup: 0.45, curl: -0.06 },
+      { n: 12, len: 0.46, w: 0.24, tilt: 28, cup: 0.5, curl: 0.02 },
+      { n: 12, len: 0.42, w: 0.23, tilt: 40, cup: 0.55, curl: 0.1 },
+      { n: 11, len: 0.37, w: 0.21, tilt: 51, cup: 0.6, curl: 0.18 },
+      { n: 10, len: 0.32, w: 0.19, tilt: 61, cup: 0.62, curl: 0.24 },
+      { n: 9, len: 0.26, w: 0.16, tilt: 70, cup: 0.65, curl: 0.3 },
+      { n: 7, len: 0.2, w: 0.12, tilt: 78, cup: 0.65, curl: 0.34 },
     ];
     layers.forEach((L, li) => {
       for (let k = 0; k < L.n; k++) petals.push(petal({
-        len: L.len * j(0.12), width: L.w * j(0.15), cup: L.cup, curl: L.curl * j(0.3), tilt: deg(L.tilt * j(0.12)),
-        yaw: (k / L.n) * Math.PI * 2 + li * 0.37 + (J() - 0.5) * 0.25, y: li * 0.022,
-        shade: [0.6 + li * 0.04, 1 - li * 0.025],
+        len: L.len * j(0.16), width: L.w * j(0.2), cup: L.cup * j(0.2), curl: L.curl * j(0.4), tilt: deg(L.tilt * j(0.18) + 2),
+        yaw: (k / L.n) * Math.PI * 2 + li * 0.41 + (J() - 0.5) * 0.4, y: li * 0.02,
+        shade: [0.58 + li * 0.04, 1], su: 10, sv: 8, crumple: 0.2, fringe: 0.06,
       }));
     });
-    centers.push(disc(0.06, 0.05, 0.11, 1), ...stamens(10, 0.07, 0.05, 0.1, 7));
+    centers.push(disc(0.07, 0.05, 0.1, 0.85), ...stamens(22, 0.09, 0.07, 0.1, 7));
   } else if (type === 'rose') {
-    const n = 26;
+    const n = 34;
     for (let k = 0; k < n; k++) {
       const t = k / (n - 1);               // 0 = outer, 1 = inner bud
       petals.push(petal({
         len: (0.52 - t * 0.32) * j(0.06), width: (0.31 - t * 0.17) * j(0.08), cup: 0.55 + t * 0.35,
         curl: t < 0.35 ? -0.2 : 0.28 * t, tilt: deg(12 + t * 78), yaw: k * GOLDEN * 1.02,
-        y: t * 0.1, shade: [0.5 + t * 0.12, 0.98 - t * 0.14], vein: 0.08,
+        y: t * 0.1, shade: [0.5 + t * 0.12, 0.98 - t * 0.14], vein: 0.08, crumple: 0.15, fringe: 0,
       }));
     }
   } else if (type === 'daisy') {
@@ -145,7 +155,7 @@ function buildFlower(type) {
       const n = 16;
       for (let k = 0; k < n; k++) petals.push(petal({
         len: (0.48 - layer * 0.05) * j(0.08), width: 0.07 * j(0.12), cup: 0.28, curl: -0.06 * j(0.5), tilt: deg((8 + layer * 12) * j(0.3)),
-        yaw: (k / n) * Math.PI * 2 + layer * (Math.PI / n), y: layer * 0.015, shade: [0.78, 1], su: 8, sv: 4, vein: 0.2,
+        yaw: (k / n) * Math.PI * 2 + layer * (Math.PI / n), y: layer * 0.015, shade: [0.78, 1], su: 8, sv: 4, vein: 0.2, crumple: 0.15, fringe: 0.04,
       }));
     }
     centers.push(disc(0.13, 0.08, 0.02, 1));
@@ -156,7 +166,7 @@ function buildFlower(type) {
   } else if (type === 'tulip') {
     for (let k = 0; k < 6; k++) petals.push(petal({
       len: 0.6 * j(0.05), width: 0.3, cup: 0.72, curl: 0.12 * j(0.3), tilt: deg((k % 2 ? 64 : 72) * j(0.04)),
-      yaw: (k / 6) * Math.PI * 2 + (k % 2 ? 0.25 : 0), y: -0.12, shade: [0.55, 1], vein: 0.1,
+      yaw: (k / 6) * Math.PI * 2 + (k % 2 ? 0.25 : 0), y: -0.12, shade: [0.55, 1], vein: 0.1, crumple: 0.18,
     }));
   } else if (type === 'cat') {
     petals.push(ball(0.42, 0, 0, 0, 1, 0.78, 0.92));
@@ -204,7 +214,7 @@ function buildFlower(type) {
 }
 
 function buildLeaf() {
-  const g = petal({ len: 0.62, width: 0.14, cup: -0.35, curl: -0.12, tilt: Math.PI / 2, yaw: 0, shade: [0.55, 1], su: 8, sv: 4 });
+  const g = petal({ len: 0.62, width: 0.14, cup: -0.35, curl: -0.12, tilt: Math.PI / 2, yaw: 0, shade: [0.55, 1], su: 8, sv: 4, round: false });
   // V-fold along the midrib
   const p = g.attributes.position;
   for (let i = 0; i < p.count; i++) p.setZ(i, p.getZ(i) - Math.abs(p.getX(i)) * 0.35);
@@ -262,8 +272,8 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 200);
 
-scene.add(new THREE.HemisphereLight(0xffffff, 0xb7a58f, 1.55));
-const sun = new THREE.DirectionalLight(0xfff4e6, 1.9);
+scene.add(new THREE.HemisphereLight(0xffffff, 0xd9c4b0, 1.5));
+const sun = new THREE.DirectionalLight(0xfff1e2, 2.6);
 sun.position.set(4, 9, 6);
 scene.add(sun);
 const rim = new THREE.DirectionalLight(0xdfe6ff, 0.6);
@@ -290,6 +300,63 @@ const vase = new THREE.Group();
 }
 scene.add(vase);
 
+// Butterflies: a handful flutter around the bouquet and fly off when it blooms
+function wingGeometry() {
+  const sh = new THREE.Shape();
+  sh.moveTo(0, 0);
+  sh.bezierCurveTo(0.15, 0.32, 0.62, 0.42, 0.58, 0.12);   // fore wing
+  sh.bezierCurveTo(0.55, -0.02, 0.3, -0.04, 0.22, -0.05);
+  sh.bezierCurveTo(0.42, -0.14, 0.4, -0.42, 0.18, -0.36); // hind wing
+  sh.bezierCurveTo(0.06, -0.32, 0.02, -0.12, 0, 0);
+  const g = new THREE.ShapeGeometry(sh, 10);
+  g.rotateX(-Math.PI / 2);            // lie flat, span along +X, body along Z
+  const pos = g.attributes.position, col = [];
+  for (let i = 0; i < pos.count; i++) {  // darker near the body, bright wing edge
+    const r = Math.hypot(pos.getX(i), pos.getZ(i));
+    const c = 0.8 + 0.2 * Math.min(1, r / 0.5);
+    col.push(c, c, c);
+  }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  return g;
+}
+const wingGeo = wingGeometry();
+const wingMat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.5 });
+const bodyMat = new THREE.MeshStandardMaterial({ color: '#2a2320', roughness: 0.6 });
+const bodyGeo = new THREE.CapsuleGeometry(0.03, 0.26, 4, 8).rotateX(Math.PI / 2);
+const butterflies = [];
+for (let i = 0; i < 5; i++) {
+  const g = new THREE.Group();
+  const L = new THREE.Mesh(wingGeo, wingMat), Rw = new THREE.Mesh(wingGeo, wingMat);
+  Rw.scale.x = -1;
+  const wl = new THREE.Group(), wr = new THREE.Group();
+  wl.add(L); wr.add(Rw);
+  g.add(wl, wr, new THREE.Mesh(bodyGeo, bodyMat));
+  g.userData = { wl, wr, phase: i * 1.37, speed: 0.22 + i * 0.035, radius: BOUQUET_R + 0.7 + (i % 3) * 0.35, dir: i % 2 ? 1 : -1, size: 0.38 + (i % 3) * 0.07 };
+  scene.add(g);
+  butterflies.push(g);
+}
+const _look = new THREE.Vector3();
+function flyButterflies(time, bloom) {
+  for (const b of butterflies) {
+    const u = b.userData;
+    const at = (t) => {
+      const a = u.dir * t * u.speed + u.phase;
+      return new THREE.Vector3(
+        Math.cos(a) * u.radius,
+        BOUQUET_CENTER.y + 0.4 + Math.sin(t * 0.9 + u.phase) * 1.1 + bloom * 5,
+        Math.sin(a) * u.radius * 0.8,
+      );
+    };
+    b.position.copy(at(time));
+    b.lookAt(_look.copy(at(time + 0.05)));
+    const flap = Math.sin(time * 14 + u.phase * 3) * 0.9;
+    u.wl.rotation.z = flap;
+    u.wr.rotation.z = -flap;
+    b.scale.setScalar(Math.max(1e-4, u.size * (1 - bloom)));
+    b.visible = bloom < 0.999;
+  }
+}
+
 // QR card (paper + quiet zone) — always light so phones can read it in dark mode too
 const cardMat = new THREE.MeshBasicMaterial({ color: '#fbfaf7', transparent: true, opacity: 0 });
 const card = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), cardMat);
@@ -311,7 +378,7 @@ let items = [];         // per-flower animation data
 let leaves = [];
 let tiles = [];         // {x,z,finder}
 
-const petalMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, side: THREE.DoubleSide });
+const petalMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, side: THREE.DoubleSide });
 const centerMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 });
 const inkMat = new THREE.MeshStandardMaterial({ color: '#17171a', roughness: 0.35 });
 const leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, side: THREE.DoubleSide });
@@ -377,26 +444,31 @@ function build() {
     if (!finder) flowerCells.push({ x, z });
   }
 
-  // Bouquet targets: a Fibonacci dome, shuffled so flights cross organically
+  // Bouquet: a few dozen big "hero" blooms cover the dome; the rest wait inside the ball
+  // and burst out on bloom. Hundreds of tiny flowers on the surface just read as noise.
   const N = flowerCells.length;
   const buddy = BUDDIES.has(state.flower);
-  const dome = [];
-  const yMin = -0.42;
-  for (let i = 0; i < N; i++) {
-    const y = 1 - ((i + 0.5) / N) * (1 - yMin);
+  const yMin = -0.55;
+  const K = Math.min(N, buddy ? 90 : 72);
+  const slots = [];
+  for (let i = 0; i < K; i++) {
+    const y = 1 - ((i + 0.5) / K) * (1 - yMin);
     const rr = Math.sqrt(1 - y * y);
     const phi = i * GOLDEN;
-    dome.push(new THREE.Vector3(Math.cos(phi) * rr, y, Math.sin(phi) * rr));
+    slots.push({ d: new THREE.Vector3(Math.cos(phi) * rr, y, Math.sin(phi) * rr), hero: true });
   }
-  for (let i = N - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [dome[i], dome[j]] = [dome[j], dome[i]]; }
+  for (let i = K; i < N; i++) {
+    const d = new THREE.Vector3(R() * 2 - 1, R() * 1.6 - 0.6, R() * 2 - 1).normalize();
+    slots.push({ d, hero: false });
+  }
+  for (let i = N - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [slots[i], slots[j]] = [slots[j], slots[i]]; }
 
-  const bouquetScale = Math.sqrt((2 * Math.PI * BOUQUET_R * BOUQUET_R * (1 - yMin)) / Math.max(N, 1)) * 1.25;
-  const bouquetFill = bouquetScale * FILL[state.flower];
+  const heroScale = Math.sqrt((2 * Math.PI * BOUQUET_R * BOUQUET_R * (1 - yMin)) / Math.max(K, 1)) * 1.3 * FILL[state.flower];
   const gridScale = CELL * 0.9 * Math.min(1.3, FILL[state.flower]);
 
   items = flowerCells.map((cell, i) => {
-    const d = dome[i];
-    const depth = 1 - R() * 0.1;
+    const { d, hero } = slots[i];
+    const depth = hero ? 1 - R() * 0.08 : 0.45 + R() * 0.35;
     const bPos = d.clone().multiplyScalar(BOUQUET_R * depth).add(BOUQUET_CENTER);
     let bQuat, gQuat;
     if (buddy) {
@@ -409,9 +481,10 @@ function build() {
     }
     const dist = Math.hypot(cell.x, cell.z) / (off * 1.42 || 1);
     return {
-      bPos, bQuat, bScale: bouquetFill * (0.85 + R() * 0.35),
+      ao: hero ? 0.9 + 0.1 * R() : 0.6,
+      bPos, bQuat, bScale: heroScale * (hero ? 0.88 + R() * 0.3 : 0.5),
       gPos: new THREE.Vector3(cell.x, 0.05, cell.z), gQuat, gScale: gridScale * (1 + R() * 0.08),
-      delay: dist * 0.16 + R() * 0.08,
+      delay: dist * 0.12 + R() * 0.06,
       lift: 0.4 + R() * 0.9,
       tint: [(R() - 0.5) * 0.04, (R() - 0.5) * 0.12, (R() - 0.5) * 0.12],
     };
@@ -430,16 +503,16 @@ function build() {
   });
 
   // Greenery around the rim of the bouquet
-  const L = Math.round(Math.min(90, 34 + N * 0.12));
+  const L = Math.round(Math.min(160, 60 + N * 0.2));
   leaves = [];
   for (let i = 0; i < L; i++) {
     const a = (i / L) * Math.PI * 2 + R() * 0.3;
-    const elev = -0.35 + R() * 0.75;
+    const elev = -0.55 + R() * 1.4;
     const dir = new THREE.Vector3(Math.cos(a) * Math.cos(elev), Math.sin(elev), Math.sin(a) * Math.cos(elev));
-    const pos = dir.clone().multiplyScalar(BOUQUET_R * 0.78).add(BOUQUET_CENTER);
+    const pos = dir.clone().multiplyScalar(BOUQUET_R * (0.66 + R() * 0.14)).add(BOUQUET_CENTER);
     const q = new THREE.Quaternion().setFromUnitVectors(UP, dir)
       .multiply(new THREE.Quaternion().setFromAxisAngle(UP, R() * Math.PI * 2));
-    leaves.push({ pos, q, s: 0.8 + R() * 0.5, delay: R() * 0.2 });
+    leaves.push({ pos, q, s: 0.75 + R() * 0.45, delay: R() * 0.2 });
   }
   leafMesh = new THREE.InstancedMesh(leafGeo, leafMat, L);
   leafMesh.frustumCulled = false;
@@ -468,7 +541,7 @@ function recolor() {
   for (const m of flowerMeshes) {
     if (m.userData.role === 'ink') continue;
     const src = m.userData.role === 'center' ? center : base;
-    items.forEach((it, i) => { c.copy(src).offsetHSL(it.tint[0], it.tint[1], it.tint[2] * 0.6); m.setColorAt(i, c); });
+    items.forEach((it, i) => { c.copy(src).offsetHSL(it.tint[0], it.tint[1], it.tint[2] * 0.6).multiplyScalar(it.ao); m.setColorAt(i, c); });
     m.instanceColor.needsUpdate = true;
   }
   if (leafMesh) {
@@ -476,6 +549,7 @@ function recolor() {
     leafMesh.instanceColor.needsUpdate = true;
   }
   tileMat.color.set(pal.tile);
+  wingMat.color.set(pal.petal);
   document.querySelectorAll('#palettes button').forEach((b) => b.setAttribute('aria-checked', b.dataset.id === state.palette));
 }
 
@@ -486,6 +560,7 @@ const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) 
 const clamp01 = (t) => Math.min(1, Math.max(0, t));
 const M = new THREE.Matrix4(), P = new THREE.Vector3(), Q = new THREE.Quaternion(), S = new THREE.Vector3();
 const spinQ = new THREE.Quaternion(), tmpV = new THREE.Vector3();
+const swayQ = new THREE.Quaternion(), swayE = new THREE.Euler();
 
 function frame(dt, force = false) {
   const moving = state.p !== state.target;
@@ -499,14 +574,18 @@ function frame(dt, force = false) {
 
   const p = state.p;
   spinQ.setFromAxisAngle(UP, state.spin);
+  const time = reduceMotion ? 0 : performance.now() / 1000;
 
   items.forEach((it, i) => {
-    const e = easeInOut(clamp01((p - it.delay) / (1 - 0.24)));
+    const e = easeInOut(clamp01((p - it.delay) / (1 - 0.18)));
     tmpV.copy(it.bPos).sub(BOUQUET_CENTER).applyQuaternion(spinQ).add(BOUQUET_CENTER);
     P.lerpVectors(tmpV, it.gPos, e);
     P.y += Math.sin(e * Math.PI) * it.lift;
-    Q.copy(spinQ).multiply(it.bQuat).slerp(it.gQuat, e);
-    S.setScalar(THREE.MathUtils.lerp(it.bScale, it.gScale, e));
+    // idle life: each bloom nods and breathes on its own rhythm, fading out as it flies
+    const life = 1 - e;
+    swayE.set(Math.sin(time * 1.1 + i * 0.7) * 0.07 * life, 0, Math.cos(time * 0.9 + i * 1.3) * 0.07 * life);
+    Q.copy(spinQ).multiply(it.bQuat).multiply(swayQ.setFromEuler(swayE)).slerp(it.gQuat, e);
+    S.setScalar(THREE.MathUtils.lerp(it.bScale * (1 + Math.sin(time * 1.6 + i) * 0.025 * life), it.gScale, e));
     M.compose(P, Q, S);
     for (const m of flowerMeshes) m.setMatrixAt(i, M);
   });
@@ -516,7 +595,8 @@ function frame(dt, force = false) {
     const e = easeInOut(clamp01((p - l.delay) / 0.5));
     P.copy(l.pos).sub(BOUQUET_CENTER).applyQuaternion(spinQ).add(BOUQUET_CENTER);
     P.y -= e * 1.2;
-    Q.copy(spinQ).multiply(l.q);
+    swayE.set(Math.sin(time * 1.3 + i) * 0.1, 0, 0);
+    Q.copy(spinQ).multiply(l.q).multiply(swayQ.setFromEuler(swayE));
     S.setScalar(Math.max(1e-4, l.s * (1 - e)));
     M.compose(P, Q, S);
     leafMesh.setMatrixAt(i, M);
@@ -540,6 +620,7 @@ function frame(dt, force = false) {
   vase.scale.setScalar(Math.max(1e-4, 1 - eVase));
   vase.position.y = -eVase * 0.8;
   vase.rotation.y = state.spin;
+  flyButterflies(reduceMotion ? 0 : performance.now() / 1000, easeInOut(clamp01(p / 0.4)));
 
   // Flowers deepen on the grid so the scanner reads them as dark modules
   const eDark = easeInOut(clamp01((p - 0.5) / 0.5));
@@ -551,7 +632,7 @@ function frame(dt, force = false) {
 }
 
 // Camera blends between a 3/4 bouquet view and straight-down grid view
-const camA = { dir: new THREE.Vector3(0, 0.22, 1).normalize(), target: new THREE.Vector3(0, 2.55, 0) };
+const camA = { dir: new THREE.Vector3(0, 0.22, 1).normalize(), target: new THREE.Vector3(0, 2.95, 0) };
 const camB = { dir: new THREE.Vector3(0, 1, 0.0001).normalize(), target: new THREE.Vector3(0, 0, 0) };
 let view = { w: 1, h: 1, ox: 0, oy: 0, effW: 1, effH: 1 };
 
@@ -563,7 +644,7 @@ function fitDistance(w, h) {
 }
 
 function placeCamera(e) {
-  const dA = fitDistance(5.4, 5.6) * 1.2;
+  const dA = fitDistance(5.6, 6.2) * 1.15;
   const size = (state.n + QUIET * 2) * CELL;
   const dB = fitDistance(size, size) * 1.08;
   const dir = tmpV.lerpVectors(camA.dir, camB.dir, e).normalize();
@@ -688,7 +769,12 @@ urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { urlInput.
 
 // Tap vs drag: only a clean tap toggles
 let down = null;
-canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, lx: e.clientX }; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', (e) => {
+  if (!down || state.p > 0) return;
+  state.spin += (e.clientX - down.lx) * 0.008;
+  down.lx = e.clientX;
+});
 canvas.addEventListener('pointerup', (e) => {
   if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 8) toggleBloom();
   down = null;
