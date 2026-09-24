@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import qrcode from 'qrcode-generator';
 
 // ------------------------------------------------------------------
@@ -440,6 +441,8 @@ function build() {
   if (isKid) {
     const want = KID_FIGURES[state.flower] || KID_DEFAULT;
     if (want !== kidStyle) { kidStyle = want; rebuildKidBody(); }
+    if (want.model && kidModel.url !== want.model) loadKidModel(want.model); // rebuilds when ready
+    setModelMode(!!want.model && kidModel.url === want.model && !!kidModel.group);
     items = []; leaves = []; tiles = [];
     card.visible = false;
     buildKid(qr);
@@ -691,6 +694,7 @@ const KID_DEFAULT = {
   head: 'round', brows: 'thin', eyes: 'classic', tufts: true, cheeks: true,
   hairCap: [1.38, -0.5, 1], headScale: 1, nose: true, mouth: 'grin', eyeSpread: 0.32, browSize: 1, earSize: 1,
   eyeScale: 1, eyePitch: 0.1, glint: 0.022, shoe: '#f3f1ec', sole: '#d94f3d', toon: false,
+  model: null, modelChest: 0.4, // optional GLB that replaces the built-in body; chest = height fraction to dive into
   fibreDark: null, fibreLight: '#f4efe4',
 };
 let kidStyle = KID_DEFAULT;
@@ -982,8 +986,66 @@ function buildKidBody() {
   const box = new THREE.Box3().setFromObject(kid);
   kidParts.fit = new THREE.Vector2(Math.max(2.8, box.max.x - box.min.x + 0.6), box.max.y - box.min.y + 0.3);
   kidParts.fitCenter = box.getCenter(new THREE.Vector3()).setX(0).setZ(0);
+  kidParts.bodyFit = kidParts.fit.clone(); kidParts.bodyFitCenter = kidParts.fitCenter.clone();
 }
 buildKidBody();
+
+// ---- Optional 3D model for the kid (e.g. a downloaded GLB) ----
+const kidModel = { url: null, group: null, hit: null, loading: null };
+const radialAlpha = (() => { // soft round edge for the knit patch
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const x = c.getContext('2d'), g = x.createRadialGradient(128, 128, 40, 128, 128, 128);
+  g.addColorStop(0, '#fff'); g.addColorStop(1, '#000'); x.fillStyle = g; x.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+})();
+const patchMat = new THREE.MeshStandardMaterial({ roughness: 0.95, transparent: true, opacity: 0, depthWrite: false,
+  alphaMap: radialAlpha, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+const knitPatch = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), patchMat);
+knitPatch.visible = false;
+
+function loadKidModel(url) {
+  if (kidModel.loading === url || kidModel.failed === url) return;
+  kidModel.loading = url;
+  new GLTFLoader().load(url, (gltf) => {
+    if (kidModel.group) kid.remove(kidModel.group);
+    const g = gltf.scene;
+    // normalise: ~3.4 units tall, feet on the ground, centred
+    const box = new THREE.Box3().setFromObject(g), size = box.getSize(new THREE.Vector3());
+    g.scale.setScalar(3.4 / size.y);
+    const box2 = new THREE.Box3().setFromObject(g), c = box2.getCenter(new THREE.Vector3());
+    g.position.set(-c.x, -box2.min.y, -c.z);
+    const wrap = new THREE.Group(); wrap.add(g);
+    kid.add(wrap);
+    kidModel.group = wrap; kidModel.url = url; kidModel.loading = null;
+    // find the chest surface by casting a ray at the model from the front
+    wrap.updateMatrixWorld(true);
+    const y = 3.4 * kidStyle.modelChest, ray = new THREE.Raycaster(new THREE.Vector3(0, y, 20), new THREE.Vector3(0, 0, -1));
+    const hit = ray.intersectObject(wrap, true)[0];
+    kidModel.hit = hit
+      ? { p: hit.point.clone(), n: hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize() }
+      : { p: new THREE.Vector3(0, y, 0.4), n: new THREE.Vector3(0, 0, 1) };
+    // sample the shirt colour where we'll dive in, so the knit matches it
+    kidModel.shirt = hit?.object.material?.color?.getHexString?.() ? '#' + hit.object.material.color.getHexString() : null;
+    build();
+  }, undefined, () => { kidModel.loading = null; kidModel.failed = url; console.info(`3D model not found at ${url}; using the built-in figure.`); });
+}
+
+function setModelMode(on) {
+  for (const c of kid.children) {
+    if (c === kidParts.macro) continue;
+    c.visible = on ? (c === kidModel.group || c === knitPatch) : c !== kidModel.group && c !== knitPatch;
+  }
+  if (!knitPatch.parent) kid.add(knitPatch);
+  knitPatch.visible = on;
+  kidParts.modelMode = on;
+  if (on) {
+    const box = new THREE.Box3().setFromObject(kidModel.group);
+    kidParts.fit = new THREE.Vector2(Math.max(2.8, box.max.x - box.min.x + 0.6), box.max.y - box.min.y + 0.3);
+    kidParts.fitCenter = box.getCenter(new THREE.Vector3()).setX(0).setZ(0);
+  } else if (kidParts.bodyFit) {
+    kidParts.fit = kidParts.bodyFit.clone(); kidParts.fitCenter = kidParts.bodyFitCenter.clone();
+  }
+}
 
 function buildKid(qr) {
   const K = kidStyle;
@@ -1002,6 +1064,17 @@ function buildKid(qr) {
   macro.geometry.dispose(); macro.geometry = new THREE.PlaneGeometry(FIBRE_TILE * FIBRE_TILES, FIBRE_TILE * FIBRE_TILES);
   const R = rand(hash(state.url + 'spot')); // "any part of the shirt": the spot moves with the link
   macro.position.set(face.cx + (R() - 0.5) * face.flatW * 0.7, face.cy + (R() - 0.5) * face.flatH * 0.7, face.z + 0.0006);
+  macro.quaternion.identity();
+  kidParts.zoomN = new THREE.Vector3(0, 0, 1);
+  if (kidParts.modelMode && kidModel.hit) {
+    const { p, n } = kidModel.hit;
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+    macro.position.copy(p).addScaledVector(n, 0.003); macro.quaternion.copy(q);
+    knitPatch.position.copy(p).addScaledVector(n, 0.0015); knitPatch.quaternion.copy(q);
+    const pk = knitTexture(kidModel.shirt || yarn, K.ground, K.stripes);
+    patchMat.map?.dispose(); patchMat.map = knitFit(pk, 0.5, 0.5); patchMat.bumpMap = pk; patchMat.needsUpdate = true;
+    kidParts.zoomN = n.clone();
+  }
 }
 
 const _lp = new THREE.Vector3(), _ln = new THREE.Vector3(), _kq = new THREE.Quaternion();
@@ -1021,7 +1094,7 @@ function kidFrame(p, time) {
   // view direction are tied to the zoom *distance*, so the spot we dive into stays pinned on screen.
   kid.updateMatrixWorld(true);
   kidParts.macro.getWorldPosition(_lp);
-  _ln.set(0, 0, 1).applyQuaternion(kid.getWorldQuaternion(_kq));
+  _ln.copy(kidParts.zoomN || _ln.set(0, 0, 1)).applyQuaternion(kid.getWorldQuaternion(_kq));
   const z = p * p * p * (p * (p * 6 - 15) + 10);
   const dFull = fitDistance(kidParts.fit.x, kidParts.fit.y) * 1.1;
   const dEnd = fitDistance(FIBRE_TILE, FIBRE_TILE) * 1.12;
@@ -1034,6 +1107,10 @@ function kidFrame(p, time) {
   // fibres resolve into the QR grid as magnification passes a threshold, not on a timer
   const reveal = clamp01(Math.log((dEnd * 7) / d) / Math.log(7 / 1.15));
   macroMat.opacity = reveal * reveal * (3 - 2 * reveal);
+  if (kidParts.modelMode) { // on a model, the plain shirt turns into visible knit before the fibres appear
+    const kr = clamp01(Math.log(1.6 / d) / Math.log(1.6 / 0.5));
+    patchMat.opacity = kr * kr * (3 - 2 * kr);
+  }
   kidParts.macro.visible = macroMat.opacity > 0.001;
   camera.lookAt(target);
   // clip planes follow the zoom so the fabric neither clips nor flickers up close
