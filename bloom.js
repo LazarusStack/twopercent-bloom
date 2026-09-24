@@ -720,7 +720,7 @@ const macroMat = new THREE.MeshStandardMaterial({ roughness: 0.9, transparent: t
 const STITCH = 0.0045;       // world size of one knit stitch
 const STRIPE_PERIOD = 0.09;  // world height of one stripe repeat
 const FIBRE_TILE = 0.02;     // world size of one woven QR tile: microscopic
-const FIBRE_TILES = 9;       // tiles across the revealed patch
+const FIBRE_TILES = 7;       // tiles across the revealed patch (small enough to sit on curved sleeves)
 const CREAM = '#f4efe4';
 
 function stitchSprite(hex, s, k) {
@@ -1000,7 +1000,7 @@ const radialAlpha = (() => { // soft round edge for the knit patch
 })();
 const patchMat = new THREE.MeshStandardMaterial({ roughness: 0.95, transparent: true, opacity: 0, depthWrite: false,
   alphaMap: radialAlpha, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
-const knitPatch = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), patchMat);
+const knitPatch = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), patchMat);
 knitPatch.visible = false;
 
 function loadKidModel(url) {
@@ -1021,9 +1021,12 @@ function loadKidModel(url) {
     wrap.updateMatrixWorld(true);
     const y = 3.4 * kidStyle.modelChest, ray = new THREE.Raycaster(new THREE.Vector3(0, y, 20), new THREE.Vector3(0, 0, -1));
     const hit = ray.intersectObject(wrap, true)[0];
+    kid.updateMatrixWorld(true);
+    const inv = kid.getWorldQuaternion(new THREE.Quaternion()).invert();
     kidModel.hit = hit
-      ? { p: hit.point.clone(), n: hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize() }
+      ? { p: kid.worldToLocal(hit.point.clone()), n: hit.face.normal.clone().transformDirection(hit.object.matrixWorld).applyQuaternion(inv).normalize() }
       : { p: new THREE.Vector3(0, y, 0.4), n: new THREE.Vector3(0, 0, 1) };
+    kidModel.shirtMat = hit?.object.material || null;
     // sample the shirt colour where we'll dive in, so the knit matches it
     kidModel.shirt = hit?.object.material?.color?.getHexString?.() ? '#' + hit.object.material.color.getHexString() : null;
     build();
@@ -1060,22 +1063,84 @@ function buildKid(qr) {
   if (K.toon) syncToon();
   const fib = fibreTile(qr, K.fibreDark || yarn, K.fibreLight);
   macroMat.map = fib; macroMat.bumpMap = fib; macroMat.needsUpdate = true;
-  const macro = kidParts.macro, face = kidParts.face;
+  const macro = kidParts.macro;
   macro.geometry.dispose(); macro.geometry = new THREE.PlaneGeometry(FIBRE_TILE * FIBRE_TILES, FIBRE_TILE * FIBRE_TILES);
-  const R = rand(hash(state.url + 'spot')); // "any part of the shirt": the spot moves with the link
-  macro.position.set(face.cx + (R() - 0.5) * face.flatW * 0.7, face.cy + (R() - 0.5) * face.flatH * 0.7, face.z + 0.0006);
-  macro.quaternion.identity();
-  kidParts.zoomN = new THREE.Vector3(0, 0, 1);
+  placeDefaultZoom();
+  if (kidParts.modelMode && kidModel.hit) {
+    const pk = knitTexture(kidModel.shirt || yarn, K.ground, K.stripes);
+    patchMat.map?.dispose(); patchMat.map = knitFit(pk, 0.3, 0.3); patchMat.bumpMap = pk; patchMat.needsUpdate = true;
+    patchMat.color.setScalar(1.3); // knit shading averages darker than a flat colour; lift it to match the shirt
+  }
+}
+
+// ---- Where the dive lands ----
+const Z_AXIS = new THREE.Vector3(0, 0, 1);
+// Stick the fibre patch (and knit patch) onto `obj` at a world point/normal, so it moves with it
+function setZoomPoint(obj, pWorld, nWorld) {
+  obj.updateMatrixWorld(true);
+  const invQ = obj.getWorldQuaternion(new THREE.Quaternion()).invert();
+  const ws = obj.getWorldScale(new THREE.Vector3());
+  const qLocal = new THREE.Quaternion().setFromUnitVectors(Z_AXIS, nWorld.clone().applyQuaternion(invQ).normalize());
+  for (const [m, lift] of [[kidParts.macro, 0.003], [knitPatch, 0.0015]]) {
+    obj.add(m);
+    m.position.copy(obj.worldToLocal(pWorld.clone().addScaledVector(nWorld, lift)));
+    m.quaternion.copy(qLocal);
+    m.scale.set(1 / ws.x, 1 / ws.y, 1 / ws.z);
+  }
+}
+function placeDefaultZoom() {
+  kid.updateMatrixWorld(true);
   if (kidParts.modelMode && kidModel.hit) {
     const { p, n } = kidModel.hit;
-    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
-    macro.position.copy(p).addScaledVector(n, 0.003); macro.quaternion.copy(q);
-    knitPatch.position.copy(p).addScaledVector(n, 0.0015); knitPatch.quaternion.copy(q);
-    const pk = knitTexture(kidModel.shirt || yarn, K.ground, K.stripes);
-    patchMat.map?.dispose(); patchMat.map = knitFit(pk, 0.5, 0.5); patchMat.bumpMap = pk; patchMat.needsUpdate = true;
-    patchMat.color.setScalar(1.3); // knit shading averages darker than a flat colour; lift it to match the shirt
-    kidParts.zoomN = n.clone();
+    setZoomPoint(kid, kid.localToWorld(p.clone()), n.clone().applyQuaternion(kid.getWorldQuaternion(new THREE.Quaternion())));
+    return;
   }
+  const face = kidParts.face, R = rand(hash(state.url + 'spot')); // the default spot moves with the link
+  const local = new THREE.Vector3(face.cx + (R() - 0.5) * face.flatW * 0.7, face.cy + (R() - 0.5) * face.flatH * 0.7, face.z);
+  setZoomPoint(kid, kid.localToWorld(local), Z_AXIS.clone().applyQuaternion(kid.getWorldQuaternion(new THREE.Quaternion())));
+}
+function shirtMeshes() {
+  const out = [];
+  kid.traverseVisible((o) => {
+    if (!o.isMesh || o === kidParts.macro || o === knitPatch || o.material === outlineMat) return;
+    const m = o.material, src = [...toonCopies].find(([, t]) => t === m)?.[0] || m; // look through toon twins
+    if (kidParts.modelMode ? m === kidModel.shirtMat : src === kidMats.shirt || src === sleeveMat) out.push(o);
+  });
+  return out;
+}
+const _ray = new THREE.Raycaster();
+// Dive where the user tapped if it's shirt; otherwise the nearest visible bit of shirt on screen
+function zoomAtScreen(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+  const shirts = shirtMeshes();
+  if (!shirts.length) return placeDefaultZoom();
+  const pickables = []; kid.traverseVisible((o) => { if (o.isMesh && o !== kidParts.macro && o !== knitPatch && o.material !== outlineMat) pickables.push(o); });
+  const firstHit = (v2) => { _ray.setFromCamera(v2, camera); return _ray.intersectObjects(pickables, false)[0]; };
+  const useHit = (h) => setZoomPoint(h.object, h.point, h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize());
+  let h = firstHit(ndc);
+  if (h && shirts.includes(h.object)) return useHit(h);
+  // nearest front-facing shirt vertex to the tap, in screen space
+  const aspect = r.width / r.height, v = new THREE.Vector3(), n = new THREE.Vector3(), sp = new THREE.Vector3();
+  let best = null, bestD = Infinity;
+  for (const m of shirts) {
+    if (!m.geometry.attributes.normal) m.geometry.computeVertexNormals();
+    const P = m.geometry.attributes.position, N = m.geometry.attributes.normal;
+    const step = Math.max(1, Math.floor(P.count / 6000));
+    const nm = new THREE.Matrix3().getNormalMatrix(m.matrixWorld);
+    for (let i = 0; i < P.count; i += step) {
+      v.fromBufferAttribute(P, i).applyMatrix4(m.matrixWorld);
+      n.fromBufferAttribute(N, i).applyMatrix3(nm).normalize();
+      if (n.dot(sp.copy(camera.position).sub(v)) <= 0) continue; // facing away
+      sp.copy(v).project(camera);
+      const d = ((sp.x - ndc.x) * aspect) ** 2 + (sp.y - ndc.y) ** 2;
+      if (d < bestD) { bestD = d; best = { m, p: v.clone(), n: n.clone(), s: new THREE.Vector2(sp.x, sp.y) }; }
+    }
+  }
+  if (!best) return placeDefaultZoom();
+  h = firstHit(best.s); // prefer the exact visible surface at that spot
+  if (h && shirts.includes(h.object)) return useHit(h);
+  setZoomPoint(best.m, best.p, best.n);
 }
 
 const _lp = new THREE.Vector3(), _ln = new THREE.Vector3(), _kq = new THREE.Quaternion();
@@ -1095,7 +1160,7 @@ function kidFrame(p, time) {
   // view direction are tied to the zoom *distance*, so the spot we dive into stays pinned on screen.
   kid.updateMatrixWorld(true);
   kidParts.macro.getWorldPosition(_lp);
-  _ln.copy(kidParts.zoomN || _ln.set(0, 0, 1)).applyQuaternion(kid.getWorldQuaternion(_kq));
+  _ln.set(0, 0, 1).applyQuaternion(kidParts.macro.getWorldQuaternion(_kq));
   const z = p * p * p * (p * (p * 6 - 15) + 10);
   const dFull = fitDistance(kidParts.fit.x, kidParts.fit.y) * 1.1;
   const dEnd = fitDistance(FIBRE_TILE, FIBRE_TILE) * 1.12;
@@ -1248,12 +1313,16 @@ canvas.addEventListener('pointermove', (e) => {
   down.lx = e.clientX;
 });
 canvas.addEventListener('pointerup', (e) => {
-  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 8) toggleBloom();
+  if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 8) {
+    if (isKidFig(state.flower) && state.target === 0) zoomAtScreen(e.clientX, e.clientY);
+    toggleBloom();
+  }
   down = null;
 });
 canvas.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBloom(); } });
-hint.addEventListener('click', () => toggleBloom());
-bloomBtn.addEventListener('click', () => toggleBloom());
+const zoomDefault = () => { if (isKidFig(state.flower) && state.target === 0) placeDefaultZoom(); toggleBloom(); };
+hint.addEventListener('click', zoomDefault);
+bloomBtn.addEventListener('click', zoomDefault);
 
 $('copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(shareUrl()); toast('Link copied'); } catch { toast('Copy failed. Use the address bar.'); }
