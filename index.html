@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Bloom — 2% Club</title>
+<meta name="description" content="A vase of flowers that blooms into a scannable QR code. An experiment by 2% Club." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230b0b0c'/><text x='50' y='72' text-anchor='middle' font-family='Arial Black,Arial' font-weight='900' font-size='64' fill='white'>2<tspan fill='%232f4bff' font-size='40'>%</tspan></text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="bloom.css" />
+<script>try{var t=localStorage.getItem('bloom-theme');if(t==='dark')document.documentElement.dataset.theme='dark'}catch(e){}</script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+  "qrcode-generator": "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/+esm"
+} }
+</script>
+</head>
+<body>
+<canvas id="scene" aria-label="Bouquet of flowers. Tap to bloom it into a QR code." tabindex="0"></canvas>
+
+<header class="brand">
+  <a class="logo" href="mailto:twopersonclub@gmail.com" aria-label="Email 2% Club"><b>2<span>%</span></b><i>CLUB</i></a>
+  <div class="brand-copy">
+    <p class="eyebrow">Experiment 01</p>
+    <h1>Bloom</h1>
+    <p class="lede">A bouquet that turns into a QR code you can scan. Paste any link, then tap the flowers.</p>
+  </div>
+</header>
+
+<aside class="panel" id="panel" data-open="false">
+  <button class="panel-grip" id="grip" aria-label="Show options" aria-expanded="false"><span></span></button>
+
+  <div class="panel-head">
+    <span class="label" id="linkLabel">Link</span>
+    <button class="icon-btn" id="theme" aria-label="Switch to dark theme" title="Switch theme">
+      <svg class="i-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      <svg class="i-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.8"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1"/></svg>
+    </button>
+  </div>
+  <label class="field" aria-labelledby="linkLabel">
+    <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://your-link.com" />
+    <span class="field-note" id="note" aria-live="polite"></span>
+  </label>
+
+  <div class="panel-more">
+    <div class="group" role="radiogroup" aria-label="Bloom with">
+      <span class="label">Bloom with</span>
+      <div class="seg" id="flowers"></div>
+      <div class="seg seg-3" id="buddies"></div>
+    </div>
+
+    <div class="group">
+      <span class="label">Palette</span>
+      <div class="swatches" id="palettes" role="radiogroup" aria-label="Palette"></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-ink" id="bloomBtn">Bloom it</button>
+      <button class="btn" id="download">Download PNG</button>
+    </div>
+    <div class="actions actions-share">
+      <button class="btn btn-ghost" id="copy">Copy link</button>
+      <a class="btn btn-ghost" id="shareX" target="_blank" rel="noopener">Post on X</a>
+      <a class="btn btn-ghost" id="shareIn" target="_blank" rel="noopener">LinkedIn</a>
+    </div>
+  </div>
+</aside>
+
+<button class="hint" id="hint">Tap the bouquet to bloom a QR code</button>
+
+<footer class="credit">
+  Made by <a href="mailto:twopersonclub@gmail.com">2% Club</a>: design and code, two people. <a href="mailto:twopersonclub@gmail.com?subject=Saw%20Bloom">Say hi →</a>
+</footer>
+
+<div class="toast" id="toast" role="status"></div>
+
+<noscript><p class="noscript">Bloom needs JavaScript and WebGL.</p></noscript>
+<script type="module" src="bloom.js"></script>
+</body>
+</html>
