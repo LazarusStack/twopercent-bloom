@@ -15,7 +15,6 @@ export default {
       brows: 'bushy', browSize: 1.25,                         // heavy curved brows
       eyes: 'dark', eyeScale: 1.35, eyePitch: 0.05, glint: 0.042, eyeSpread: 0.25, // big black eyes, large highlight
       nose: false, mouth: 'smile', cheeks: false, tufts: false,
-      fibreDark: '#3a0707', fibreLight: '#f7d3c9',            // red-on-pink fibres so the QR still scans
     },
   },
 };

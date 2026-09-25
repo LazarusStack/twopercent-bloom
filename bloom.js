@@ -589,12 +589,17 @@ function frame(dt, force = false) {
   }
   const idle = state.p === 0 && !reduceMotion;
   if (idle && !isKidFig(state.flower)) state.spin += dt * 0.00012;
-  if (!moving && !idle && !force && state.p === 1) return false;
+  const settling = isKidFig(state.flower) && kidParts.pSmooth !== undefined && kidParts.pSmooth !== state.p;
+  if (!moving && !idle && !force && !settling && state.p === 1) return false;
 
   const p = state.p;
   spinQ.setFromAxisAngle(UP, state.spin);
   const time = reduceMotion ? 0 : performance.now() / 1000;
   if (isKidFig(state.flower)) {
+    // soften the camera's progress with a short critically-damped lag: no jolt at start or stop
+    const ps = kidParts.pSmooth ?? state.p, k = 1 - Math.exp(-dt / 110);
+    kidParts.pSmooth = force && !dt ? state.p : ps + (state.p - ps) * k;
+    if (Math.abs(kidParts.pSmooth - state.p) < 1e-4) kidParts.pSmooth = state.p;
     flyButterflies(time, 1);
     kidFrame(p, time);
     return true;
@@ -685,7 +690,7 @@ function placeCamera(e) {
 const KID = 'kid';
 const KID_FIGURES = { kid: null };            // figure id → style override (null = default look)
 const isKidFig = (id) => id in KID_FIGURES;
-const KID_MS = 2100;
+const KID_MS = 2600;
 
 // Look of the kid. A local-only module (see boot) can swap this for a personal fan-art style.
 const KID_DEFAULT = {
@@ -695,7 +700,7 @@ const KID_DEFAULT = {
   hairCap: [1.38, -0.5, 1], headScale: 1, nose: true, mouth: 'grin', eyeSpread: 0.32, browSize: 1, earSize: 1,
   eyeScale: 1, eyePitch: 0.1, glint: 0.022, shoe: '#f3f1ec', sole: '#d94f3d', toon: false,
   model: null, modelChest: 0.4, // optional GLB that replaces the built-in body; chest = height fraction to dive into
-  fibreDark: null, fibreLight: '#f4efe4',
+  fibreYarn: null, // relief-knit QR yarn; default: the shirt's yarn (the light ground on striped shirts)
 };
 let kidStyle = KID_DEFAULT;
 
@@ -758,42 +763,74 @@ function knitTexture(yarnHex, groundHex = CREAM, stripes = true) {
 }
 const knitFit = (tex, w, h) => { tex.repeat.set(w / (32 * STITCH), h / STRIPE_PERIOD); return tex; };
 
-// One seamless tile: the QR (with its quiet zone) as over-under woven fibres
-function fibreTile(qr, darkHex, lightHex = CREAM) {
-  const n = qr.getModuleCount(), T = n + QUIET * 2, size = 1024, m = size / T, s = m / 3;
-  const c = document.createElement('canvas'); c.width = c.height = size;
-  const x = c.getContext('2d');
+// One seamless tile: the QR knitted in relief, all in ONE yarn colour. Light modules are raised
+// knit stitches that catch the light; dark modules are recessed grooves of small purl bumps in
+// shadow. Returns colour + normal maps so the grooves respond to the scene lighting.
+function fibreTile(qr, yarnHex) {
+  const n = qr.getModuleCount(), T = n + QUIET * 2, size = 2048, m = size / T, SP = 2, s = m / SP;
+  const col = document.createElement('canvas'), hgt = document.createElement('canvas');
+  col.width = col.height = hgt.width = hgt.height = size;
+  const cx = col.getContext('2d'), hx = hgt.getContext('2d');
   const R = rand(hash(state.url + 'fibre'));
-  const dark = new THREE.Color(darkHex), light = new THREE.Color(lightHex);
-  const css = (col, k) => `rgb(${Math.min(255, col.r * 255 * k) | 0},${Math.min(255, col.g * 255 * k) | 0},${Math.min(255, col.b * 255 * k) | 0})`;
+  const yarn = new THREE.Color(yarnHex);
+  const lift = new THREE.Color(yarnHex).lerp(new THREE.Color('#ffffff'), 0.28); // light catching raised loops
+  const css = (c, k) => `rgb(${Math.min(255, c.r * 255 * k) | 0},${Math.min(255, c.g * 255 * k) | 0},${Math.min(255, c.b * 255 * k) | 0})`;
+  const grey = (v) => `rgb(${v | 0},${v | 0},${v | 0})`;
+  // groove floor everywhere first
+  cx.fillStyle = css(yarn, 0.32); cx.fillRect(0, 0, size, size);
+  hx.fillStyle = grey(20); hx.fillRect(0, 0, size, size);
+  const dark = (r, q) => r >= 0 && q >= 0 && r < n && q < n && qr.isDark(r, q);
   for (let r = -QUIET; r < n + QUIET; r++) for (let q = -QUIET; q < n + QUIET; q++) {
-    const inside = r >= 0 && q >= 0 && r < n && q < n;
-    const col = inside && qr.isDark(r, q) ? dark : light;
     const ox = (q + QUIET) * m, oy = (r + QUIET) * m;
-    x.fillStyle = css(col, 0.72); x.fillRect(ox, oy, m, m);
-    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
-      const px = ox + j * s, py = oy + i * s, k = 0.93 + R() * 0.14;
-      const horizontal = (i + j + r + q) % 2 === 0;
-      const g = horizontal ? x.createLinearGradient(0, py, 0, py + s) : x.createLinearGradient(px, 0, px + s, 0);
-      g.addColorStop(0, css(col, 0.8 * k)); g.addColorStop(0.45, css(col, 1.08 * k)); g.addColorStop(1, css(col, 0.74 * k));
-      x.fillStyle = g;
-      const inset = s * 0.12;
-      x.beginPath();
-      if (horizontal) x.roundRect(px - s * 0.05, py + inset, s * 1.1, s - inset * 2, s * 0.35);
-      else x.roundRect(px + inset, py - s * 0.05, s - inset * 2, s * 1.1, s * 0.35);
-      x.fill();
+    for (let i = 0; i < SP; i++) for (let j = 0; j < SP; j++) {
+      const px = ox + j * s, py = oy + i * s, k = 0.92 + R() * 0.16;
+      if (dark(r, q)) {
+        // recessed purl bumps: small, low, in shadow
+        for (let b = 0; b < 2; b++) {
+          const by = py + s * (0.3 + b * 0.42), bx = px + s * 0.5;
+          const g = cx.createRadialGradient(bx, by, 0, bx, by, s * 0.32);
+          g.addColorStop(0, css(yarn, 0.62 * k)); g.addColorStop(1, css(yarn, 0.3));
+          cx.fillStyle = g; cx.beginPath(); cx.ellipse(bx, by, s * 0.32, s * 0.16, 0, 0, Math.PI * 2); cx.fill();
+          const gh = hx.createRadialGradient(bx, by, 0, bx, by, s * 0.32);
+          gh.addColorStop(0, grey(95)); gh.addColorStop(1, grey(20));
+          hx.fillStyle = gh; hx.beginPath(); hx.ellipse(bx, by, s * 0.32, s * 0.16, 0, 0, Math.PI * 2); hx.fill();
+        }
+      } else {
+        // raised knit V: two plump loops
+        for (const side of [-1, 1]) {
+          for (const [ctx, lo, hi, isH] of [[cx, css(lift, 0.72 * k), css(lift, 1.06 * k), false], [hx, grey(120), grey(255), true]]) {
+            ctx.save();
+            ctx.translate(px + s / 2 + side * s * 0.21, py + s * 0.5);
+            ctx.rotate(side * -0.48);
+            const g = ctx.createLinearGradient(-s * 0.22, 0, s * 0.22, 0);
+            g.addColorStop(0, lo); g.addColorStop(0.5, hi); g.addColorStop(1, lo);
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.ellipse(0, 0, s * 0.22, s * 0.54, 0, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+          }
+        }
+      }
     }
   }
-  x.lineWidth = 1;
-  for (let i = 0; i < 500; i++) { // stray fibres
-    const px = R() * size, py = R() * size, a = R() * Math.PI, l = 3 + R() * 8;
-    x.strokeStyle = `rgba(255,255,255,${0.06 + R() * 0.08})`;
-    x.beginPath(); x.moveTo(px, py); x.lineTo(px + Math.cos(a) * l, py + Math.sin(a) * l); x.stroke();
+  // fuzz: tiny stray fibres on top (colour only, kept faint)
+  cx.lineWidth = 1;
+  for (let i = 0; i < 1400; i++) {
+    const px = R() * size, py = R() * size, a = R() * Math.PI, l = 3 + R() * 9;
+    cx.strokeStyle = `rgba(255,255,255,${0.04 + R() * 0.06})`;
+    cx.beginPath(); cx.moveTo(px, py); cx.lineTo(px + Math.cos(a) * l, py + Math.sin(a) * l); cx.stroke();
   }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 16; t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(FIBRE_TILES, FIBRE_TILES);
-  return t;
+  // height → tangent-space normal map
+  const H = hx.getImageData(0, 0, size, size).data, N = cx.createImageData(size, size), nd = N.data, str = 3.2;
+  const h = (x, y) => H[(((y + size) % size) * size + ((x + size) % size)) * 4] / 255;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const dx = (h(x + 1, y) - h(x - 1, y)) * str, dy = (h(x, y + 1) - h(x, y - 1)) * str;
+    const len = Math.hypot(dx, dy, 1), o = (y * size + x) * 4;
+    nd[o] = (-dx / len * 0.5 + 0.5) * 255; nd[o + 1] = (dy / len * 0.5 + 0.5) * 255; nd[o + 2] = (1 / len * 0.5 + 0.5) * 255; nd[o + 3] = 255;
+  }
+  const nc = document.createElement('canvas'); nc.width = nc.height = size; nc.getContext('2d').putImageData(N, 0, 0);
+  const mk = (c, srgb) => { const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 16; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(FIBRE_TILES, FIBRE_TILES); return t; };
+  return { map: mk(col, true), normal: mk(nc, false) };
 }
 
 // Head shape. 'onigiri' widens the lower face into round cheeks and narrows the crown,
@@ -1061,15 +1098,17 @@ function buildKid(qr) {
 
   // the hidden fibre grid: a patch of woven QR tiles on the chest, one tile centred on the zoom point
   if (K.toon) syncToon();
-  const fib = fibreTile(qr, K.fibreDark || yarn, K.fibreLight);
-  macroMat.map = fib; macroMat.bumpMap = fib; macroMat.needsUpdate = true;
+  macroMat.normalMap?.dispose();
+  const fib = fibreTile(qr, K.fibreYarn || (K.stripes ? K.ground : yarn));
+  macroMat.map = fib.map; macroMat.normalMap = fib.normal; macroMat.bumpMap = null;
+  macroMat.normalScale.set(1.4, 1.4); macroMat.needsUpdate = true;
   const macro = kidParts.macro;
   macro.geometry.dispose(); macro.geometry = new THREE.PlaneGeometry(FIBRE_TILE * FIBRE_TILES, FIBRE_TILE * FIBRE_TILES);
   placeDefaultZoom();
   if (kidParts.modelMode && kidModel.hit) {
     const pk = knitTexture(kidModel.shirt || yarn, K.ground, K.stripes);
     patchMat.map?.dispose(); patchMat.map = knitFit(pk, 0.3, 0.3); patchMat.bumpMap = pk; patchMat.needsUpdate = true;
-    patchMat.color.setScalar(1.3); // knit shading averages darker than a flat colour; lift it to match the shirt
+    patchMat.color.setScalar(1.6); // knit shading averages darker than a flat colour; lift it to match the shirt
   }
 }
 
@@ -1161,7 +1200,8 @@ function kidFrame(p, time) {
   kid.updateMatrixWorld(true);
   kidParts.macro.getWorldPosition(_lp);
   _ln.set(0, 0, 1).applyQuaternion(kidParts.macro.getWorldQuaternion(_kq));
-  const z = p * p * p * (p * (p * 6 - 15) + 10);
+  const q = kidParts.pSmooth ?? p;
+  const z = q * q * q * (q * (q * 6 - 15) + 10);
   const dFull = fitDistance(kidParts.fit.x, kidParts.fit.y) * 1.1;
   const dEnd = fitDistance(FIBRE_TILE, FIBRE_TILE) * 1.12;
   const d = dFull * Math.pow(dEnd / dFull, z);
